@@ -33,11 +33,14 @@ class Comparison(Annotator):
         self._check_comparison_groups(a, b)
         self.comp = (a, b)
         self.columns = []
-        self.prefix = f"Comp. {a} - {b} ({self.comparison_strategy.name})"
         self.column_lookup = {}
         for col in sorted(self.comparison_strategy.columns):
-            self.columns.append(f"{self.prefix} {col}")
-            self.column_lookup[col] = f"{self.prefix} {col}"
+            cn = self.name_column(col)
+            self.columns.append(cn)
+            self.column_lookup[col] = cn
+
+    def name_column(self, col):
+        return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name})"
 
     def __getitem__(self, itm):
         """look up the full column name from log2FC, p, FDR, etc"""
@@ -124,7 +127,7 @@ class Comparison(Annotator):
         comp = self.comparison_strategy.compare(df, columns_a, columns_b)
         res = {}
         for col in sorted(self.comparison_strategy.columns):
-            res[f"{self.prefix} {col}"] = comp[col]
+            res[self.name_column(col)] = comp[col]
         return pd.DataFrame(res)
 
     def dep_annos(self):
