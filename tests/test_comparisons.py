@@ -1,0 +1,322 @@
+import pytest
+import itertools
+from pytest import approx
+import pandas as pd
+from mbf_genomics import DelayedDataFrame
+from mbf_genomics.annotator import Constant
+from mbf_comparisons import Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired
+from pypipegraph.testing import (
+    # RaisesDirectOrInsidePipegraph,
+    run_pipegraph,
+    force_load,
+)  # noqa: F401
+from dppd import dppd
+
+dp, X = dppd()
+
+
+@pytest.mark.usefixtures("both_ppg_and_no_ppg")
+class TestComparisons:
+    def test_simple(self):
+        d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
+        a = Comparison(Log2FC(laplace_offset=0), {"a": ["a"], "b": ["b"]}, "a", "b")
+        force_load(d.add_annotator(a), "fl1")
+        run_pipegraph()
+        assert (d.df[a['log2FC']] == [-1.0, -2.0, -4.0]).all()
+
+    def test_simple_from_anno(self):
+        d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
+        a = Constant("five", 5)
+        b = Constant("ten", 10)
+        a = Comparison(Log2FC(laplace_offset=0), {"a": [a], "b": [b]}, "a", "b")
+        force_load(d.add_annotator(a), "fl1")
+        run_pipegraph()
+        assert (d.df[a['log2FC']] == [-1, -1, -1]).all()
+
+    def test_simple_from_anno_plus_column_name(self):
+        d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
+        a = Constant("five", 5)
+        b = Constant("ten", 10)
+        a = Comparison(
+            Log2FC(laplace_offset=0), {"a": [(a, "five")], "b": [(b, "ten")]}, "a", "b"
+        )
+        force_load(d.add_annotator(a), "fl1")
+        run_pipegraph()
+        assert (d.df[a['log2FC']] == [-1, -1, -1]).all()
+
+    def test_simple_from_anno_plus_column_pos(self):
+        d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
+        a = Constant("five", 5)
+        b = Constant("ten", 10)
+        a = Comparison(
+            Log2FC(laplace_offset=0), {"a": [(a, 0)], "b": [(b, 0)]}, "a", "b"
+        )
+        force_load(d.add_annotator(a), "fl1")
+        run_pipegraph()
+        assert (d.df[a['log2FC']] == [-1, -1, -1]).all()
+
+    def test_input_checking(self):
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, [], "a", "b")
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, {55: ["a"], "b": ["b"]}, 55, "b")
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, {"a": ["a"], "b": ["b"]}, "x", "b")
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, {"a": ["a"], "b": ["b"]}, "a", "x")
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, {"a": [3], "b": ["b"]}, "a", "b")
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, {"a": [(Constant("x", "5"), "y")], "b": ["b"]}, "a", "b")
+        with pytest.raises(ValueError):
+            Comparison(Log2FC, {"a": [Constant("x", "5"), 1], "b": ["b"]}, "a", "b")
+
+    def test_multi_plus_filter(self):
+        d = DelayedDataFrame(
+            "ex1",
+            pd.DataFrame(
+                {
+                    "a1": [1 / 0.99, 2 / 0.99, 3 / 0.99],
+                    "a2": [1 * 0.99, 2 * 0.99, 3 * 0.99],
+                    "b1": [2 * 0.99, 8 * 0.99, (16 * 3) * 0.99],
+                    "b2": [2 / 0.99, 8 / 0.99, (16 * 3) / 0.99],
+                }
+            ),
+        )
+        a = Comparison(
+            Log2FC(laplace_offset=0), {"a": ["a1", "a2"], "b": ["b1", "b2"]}, "a", "b"
+        )
+        to_test = [
+            (("log2FC", "==", -1.0), [-1.0]),
+            (("log2FC", ">", -2.0), [-1.0]),
+            (("log2FC", "<", -2.0), [-4.0]),
+            (("log2FC", ">=", -2.0), [-1.0, -2.0]),
+            (("log2FC", "<=", -2.0), [-2.0, -4.0]),
+            (("log2FC", "|>", 2.0), [-4.0]),
+            (("log2FC", "|<", 2.0), [-1.0]),
+            (("log2FC", "|>=", 2.0), [-2.0, -4.0]),
+            (("log2FC", "|<=", 2.0), [-1.0, -2.0]),
+            ((a['log2FC'], "<", -2.0), [-4.0]),
+            (("log2FC_no_such_column", "<", -2.0), ValueError),
+            (("log2FC", "|", -2.0), ValueError),
+        ]
+        filtered = {}
+        for ii, (f, r) in enumerate(to_test):
+            if r == ValueError:
+                with pytest.raises(ValueError):
+                    a.filter(d, "new%i" % ii, [f])
+            else:
+                filtered[f] = a.filter(d, "new%i" % ii, [f])
+                force_load(filtered[f].annotate(), filtered[f].name)
+
+        force_load(d.add_annotator(a), "somethingsomethingjob")
+        run_pipegraph()
+        c = a['log2FC']
+        assert (d.df[c] == [-1.0, -2.0, -4.0]).all()
+        for f, r in to_test:
+            if r != ValueError:
+                try:
+                    assert filtered[f].df[c].values == approx(r)
+                except AssertionError:
+                    print(f)
+                    raise
+
+    def test_ttest(self):
+        data = pd.DataFrame(
+            {
+                "A.R1": [0, 0, 0, 0],
+                "A.R2": [0, 0, 0, 0],
+                "A.R3": [0, 0.001, 0.001, 0.001],
+                "B.R1": [0.95, 0, 0.56, 0],
+                "B.R2": [0.99, 0, 0.56, 0],
+                "B.R3": [0.98, 0, 0.57, 0.5],
+                "C.R1": [0.02, 0.73, 0.59, 0],
+                "C.R2": [0.03, 0.75, 0.57, 0],
+                "C.R3": [0.05, 0.7, 0.58, 1],
+            }
+        )
+        ddf = DelayedDataFrame("ex1", data)
+        gts = {
+            k: list(v)
+            for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
+        }
+
+        a = Comparison(TTest, gts, "A", "B")
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        # value calculated with R to double check.
+        assert ddf.df[a["p"]].iloc[0] == pytest.approx(8.096e-07, abs=1e-4)
+        # value calculated with scipy to double check.
+        assert ddf.df[a["p"]].iloc[1] == pytest.approx(0.42264973081037427, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[2] == pytest.approx(0.04157730613277929, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[3] == pytest.approx(0.703158104919873, abs=1e-4)
+        assert ddf.df[a["FDR"]].values == pytest.approx(
+            [3.238535e-06, 5.635329e-01, 8.315462e-02, 7.031581e-01], abs=1e-4
+        )
+
+    def test_ttest_min_sample_count(self):
+        data = pd.DataFrame(
+            {"A.R1": [0, 0, 0, 0], "A.R2": [0, 0, 0, 0], "B.R1": [0.95, 0, 0.56, 0]}
+        )
+        gts = {
+            k: list(v)
+            for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
+        }
+
+        with pytest.raises(ValueError):
+            Comparison(TTest, gts, "A", "B")
+
+    def test_ttest_paired(self):
+        data = pd.DataFrame(
+            {
+                "A.R1": [0, 0, 0, 0],
+                "A.R2": [0, 0, 0, 0],
+                "A.R3": [0, 0.001, 0.001, 0.001],
+                "B.R1": [0.95, 0, 0.56, 0],
+                "B.R2": [0.99, 0, 0.56, 0],
+                "B.R3": [0.98, 0, 0.57, 0.5],
+                "C.R1": [0.02, 0.73, 0.59, 0],
+                "C.R2": [0.03, 0.75, 0.57, 0],
+                "C.R3": [0.05, 0.7, 0.58, 1],
+            }
+        )
+        ddf = DelayedDataFrame("ex1", data)
+        gts = {
+            k: list(v)
+            for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
+        }
+
+        a = Comparison(TTestPaired(), gts, "A", "B")
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        assert ddf.df[a["p"]].iloc[0] == pytest.approx(8.096338300746213e-07, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[1] == pytest.approx(0.42264973081037427, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[2] == pytest.approx(0.041378369826042816, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[3] == pytest.approx(0.42264973081037427, abs=1e-4)
+        assert ddf.df[a["FDR"]].values == pytest.approx(
+            [3.238535e-06, 4.226497e-01, 8.275674e-02, 4.226497e-01], abs=1e-4
+        )
+
+    def test_double_comparison_with_different_strategies(self):
+        data = pd.DataFrame(
+            {
+                "A.R1": [0, 0, 0, 0],
+                "A.R2": [0, 0, 0, 0],
+                "A.R3": [0, 0.001, 0.001, 0.001],
+                "B.R1": [0.95, 0, 0.56, 0],
+                "B.R2": [0.99, 0, 0.56, 0],
+                "B.R3": [0.98, 0, 0.57, 0.5],
+                "C.R1": [0.02, 0.73, 0.59, 0],
+                "C.R2": [0.03, 0.75, 0.57, 0],
+                "C.R3": [0.05, 0.7, 0.58, 1],
+            }
+        )
+        ddf = DelayedDataFrame("ex1", data)
+        gts = {
+            k: list(v)
+            for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
+        }
+
+        a = Comparison(TTestPaired(), gts, "A", "B")
+        force_load(ddf.add_annotator(a))
+        b = Comparison(TTest(), gts, "A", "B")
+        force_load(ddf.add_annotator(b))
+        run_pipegraph()
+        assert ddf.df[a["p"]].iloc[0] == pytest.approx(8.096338300746213e-07, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[1] == pytest.approx(0.42264973081037427, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[2] == pytest.approx(0.041378369826042816, abs=1e-4)
+        assert ddf.df[a["p"]].iloc[3] == pytest.approx(0.42264973081037427, abs=1e-4)
+        assert ddf.df[a["FDR"]].values == pytest.approx(
+            [3.238535e-06, 4.226497e-01, 8.275674e-02, 4.226497e-01], abs=1e-4
+        )
+        assert ddf.df[b["p"]].iloc[0] == pytest.approx(8.096e-07, abs=1e-4)
+        # value calculated with scipy to double check.
+        assert ddf.df[b["p"]].iloc[1] == pytest.approx(0.42264973081037427, abs=1e-4)
+        assert ddf.df[b["p"]].iloc[2] == pytest.approx(0.04157730613277929, abs=1e-4)
+        assert ddf.df[b["p"]].iloc[3] == pytest.approx(0.703158104919873, abs=1e-4)
+        assert ddf.df[b["FDR"]].values == pytest.approx(
+            [3.238535e-06, 5.635329e-01, 8.315462e-02, 7.031581e-01], abs=1e-4
+        )
+
+    def test_edgeR(self):
+        import mbf_sampledata
+        import mbf_r
+        import rpy2.robjects as ro
+
+        path = mbf_sampledata.get_sample_path("mbf_comparisons/TuchEtAlS1.csv")
+        # directly from the manual.
+        # plus minus """To make
+        # this file, we downloaded Table S1 from Tuch et al. [39], deleted some unnecessary columns
+        # and edited the column headings slightly:"""
+        ro.r(
+            """load_data = function(path) {
+                rawdata <- read.delim(path, check.names=FALSE, stringsAsFactors=FALSE)
+                library(edgeR)
+                y <- DGEList(counts=rawdata[,3:8], genes=rawdata[,1:2])
+                library(org.Hs.eg.db)
+                idfound <- y$genes$idRefSeq %in% mappedRkeys(org.Hs.egREFSEQ)
+                y <- y[idfound,]
+                egREFSEQ <- toTable(org.Hs.egREFSEQ)
+                m <- match(y$genes$idRefSeq, egREFSEQ$accession)
+                y$genes$EntrezGene <- egREFSEQ$gene_id[m]
+                egSYMBOL <- toTable(org.Hs.egSYMBOL)
+                m <- match(y$genes$EntrezGene, egSYMBOL$gene_id)
+                y$genes$Symbol <- egSYMBOL$symbol[m]
+
+                o <- order(rowSums(y$counts), decreasing=TRUE)
+                y <- y[o,]
+                d <- duplicated(y$genes$Symbol)
+                y <- y[!d,]
+
+                cbind(y$genes, y$counts)
+            }
+"""
+        )
+        df = mbf_r.convert_dataframe_from_r(ro.r("load_data")(str(path)))
+        df.columns = [
+            "idRefSeq",
+            "nameOfGene",
+            "EntrezGene",
+            "Symbol",
+            "8.N",
+            "8.T",
+            "33.N",
+            "33.T",
+            "51.N",
+            "51.T",
+        ]
+        assert len(df) == 10519
+
+        ddf = DelayedDataFrame("ex1", df)
+        gts = {
+            "T": [x for x in df.columns if ".T" in x],
+            "N": [x for x in df.columns if ".N" in x],
+        }
+
+        a = Comparison(EdgeRUnpaired(), gts, "T", "N")
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        # these are from the last run - the manual has no simple a vs b comparison...
+        # at least we'l notice if this changes
+        assert ddf.df[ddf.df.nameOfGene == "PTHLH"][a["log2FC"]].values == approx(
+            [4.003122]
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTHLH"][a["FDR"]].values == approx(
+            [1.332336e-11]
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTHLH"][a["p"]].values == approx(
+            [5.066397e-15]
+        )
+        df = ddf.df.set_index("nameOfGene")
+        assert df.loc["PTHLH"][gts["T"]].sum() > df.loc["PTHLH"][gts["N"]].sum()
+
+        assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["log2FC"]].values == approx(
+            [-5.127508]
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["FDR"]].values == approx(
+            [6.470885e-10]
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["p"]].values == approx(
+            [3.690970e-13]
+        )
+        assert df.loc["PTGFR"][gts["T"]].sum() < df.loc["PTGFR"][gts["N"]].sum()

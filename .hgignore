@@ -1,0 +1,11 @@
+syntax:glob
+.eggs/
+__pycache__/
+*.pyc
+out/
+.pytest_cache
+logs/ppg_run.txt
+src/*.egg-info/
+src/mqpy/tests/generated_images
+.coverage*
+tests/generated_images/
