@@ -31,7 +31,7 @@ from .maxquant_parser import (  # noqa:F401
 )
 
 from .annotator import Comparison
-from .comparisons import Log2FC, TTest, TTestPaired, EdgeRUnpaired
+from .comparisons import Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired
 
 
 def do_export(name):
@@ -45,5 +45,5 @@ def do_export(name):
 __all__ = (
     ["TableBasedDataset", "MaxQuantDataset"]
     + [key for (key, value) in globals().items() if do_export(key)]
-    + [Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired]
+    + [Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired]
 )

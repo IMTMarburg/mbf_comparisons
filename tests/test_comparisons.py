@@ -4,7 +4,7 @@ from pytest import approx
 import pandas as pd
 from mbf_genomics import DelayedDataFrame
 from mbf_genomics.annotator import Constant
-from mbf_comparisons import Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired
+from mbf_comparisons import Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired
 from pypipegraph.testing import (
     # RaisesDirectOrInsidePipegraph,
     run_pipegraph,
@@ -22,7 +22,7 @@ class TestComparisons:
         a = Comparison(Log2FC(laplace_offset=0), {"a": ["a"], "b": ["b"]}, "a", "b")
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
-        assert (d.df[a['log2FC']] == [-1.0, -2.0, -4.0]).all()
+        assert (d.df[a["log2FC"]] == [-1.0, -2.0, -4.0]).all()
 
     def test_simple_from_anno(self):
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
@@ -31,7 +31,7 @@ class TestComparisons:
         a = Comparison(Log2FC(laplace_offset=0), {"a": [a], "b": [b]}, "a", "b")
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
-        assert (d.df[a['log2FC']] == [-1, -1, -1]).all()
+        assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
 
     def test_simple_from_anno_plus_column_name(self):
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
@@ -42,7 +42,7 @@ class TestComparisons:
         )
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
-        assert (d.df[a['log2FC']] == [-1, -1, -1]).all()
+        assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
 
     def test_simple_from_anno_plus_column_pos(self):
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
@@ -53,7 +53,7 @@ class TestComparisons:
         )
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
-        assert (d.df[a['log2FC']] == [-1, -1, -1]).all()
+        assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
 
     def test_input_checking(self):
         with pytest.raises(ValueError):
@@ -96,7 +96,7 @@ class TestComparisons:
             (("log2FC", "|<", 2.0), [-1.0]),
             (("log2FC", "|>=", 2.0), [-2.0, -4.0]),
             (("log2FC", "|<=", 2.0), [-1.0, -2.0]),
-            ((a['log2FC'], "<", -2.0), [-4.0]),
+            ((a["log2FC"], "<", -2.0), [-4.0]),
             (("log2FC_no_such_column", "<", -2.0), ValueError),
             (("log2FC", "|", -2.0), ValueError),
         ]
@@ -111,7 +111,7 @@ class TestComparisons:
 
         force_load(d.add_annotator(a), "somethingsomethingjob")
         run_pipegraph()
-        c = a['log2FC']
+        c = a["log2FC"]
         assert (d.df[c] == [-1.0, -2.0, -4.0]).all()
         for f, r in to_test:
             if r != ValueError:
@@ -320,3 +320,38 @@ class TestComparisons:
             [3.690970e-13]
         )
         assert df.loc["PTGFR"][gts["T"]].sum() < df.loc["PTGFR"][gts["N"]].sum()
+
+
+    def test_deseq2(self):
+        import mbf_sampledata
+        pasilla_data = pd.read_csv(mbf_sampledata.get_sample_path("mbf_comparisons/pasillaCount_deseq2.tsv.gz"),
+                                   sep=" ")
+        #pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+
+        gts = {'treated': 
+                [x for x in pasilla_data.columns if x.startswith('treated')],
+               'untreated': [x for x in pasilla_data.columns if x.startswith('untreated')]}
+        ddf = DelayedDataFrame('ex', pasilla_data)
+        a = Comparison(DESeq2Unpaired(), gts, 'treated', 'untreated')
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        check = """# This is deseq2 version specific data- probably needs fixing if upgrading deseq2
+## baseMean log2FoldChange lfcSE stat pvalue padj
+## <numeric> <numeric> <numeric> <numeric> <numeric> <numeric>
+## FBgn0039155 453 -3.72 0.160 -23.2 1.63e-119 1.35e-115
+## FBgn0029167 2165 -2.08 0.103 -20.3 1.43e-91 5.91e-88
+## FBgn0035085 367 -2.23 0.137 -16.3 6.38e-60 1.75e-56
+## FBgn0029896 258 -2.21 0.159 -13.9 5.40e-44 1.11e-40
+## FBgn0034736 118 -2.56 0.185 -13.9 7.66e-44 1.26e-40
+"""
+        df = ddf.df.sort_values(a['FDR'])
+        df = df.set_index('Gene')
+        for row in check.split("\n"):
+            row = row.strip()
+            if row and not row[0] == '#':
+                row = row.split()
+                self.assertAlmostEqual(df.ix[row[0]][a['log2FC']], float(row[2]), places=2)
+                self.assertAlmostEqual(df.ix[row[0]][a['p']], float(row[5]), places=2)
+                self.assertAlmostEqual(df.ix[row[0]][a['FDR']], float(row[6]), places=2)
+

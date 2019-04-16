@@ -77,12 +77,12 @@ class TTestPaired:
 class EdgeRUnpaired:
 
     min_sample_count = 3
-    name = "edgeR"
+    name = "edgeRunpaired"
+    columns = ["log2FC", "p", "FDR"]
 
     def __init__(self, ignore_if_max_count_less_than=None, manual_dispersion_value=0.4):
         self.ignore_if_max_count_less_than = ignore_if_max_count_less_than
         self.manual_dispersion_value = manual_dispersion_value
-        self.columns = ["log2FC", "p", "FDR"]
 
     def get_dependencies(self):
         import rpy2.robjects as ro
@@ -182,6 +182,80 @@ class EdgeRUnpaired:
                 result["log2FC"].append(np.nan)
         return pd.DataFrame(result)
 
+class DESeq2Unpaired:
+    min_sample_count = 3
+    name = 'DESeq2unpaired'
+    columns = ["log2FC", "p", "FDR"]
+
+    def get_dependencies(self):
+        import rpy2.robjects as ro
+
+        ro.r("library('DESeq2')")
+        version = str(ro.r("packageVersion")("DESeq2"))
+        return ppg.ParameterInvariant(
+            self.__class__.__name__ + "_" + self.name,
+            (self.version, ),
+        )
+
+    def call_DESeq2(self, count_data, samples, conditions, additional_conditions=None):
+        """Call DESeq2.
+        @count_data is a DataFrame with 'samples' as the column names.
+        @samples is a list. @conditions as well. Condition is the one you're contrasting on.
+        You can add additional_conditions (a DataFrame, index = samples) which DESeq2 will
+        keep under consideration (changes the formula).
+        """
+        import rpy2.robjects as robjects
+        import rpy2.robjects.numpy2ri as numpy2ri
+        import mbf_r
+        count_data = count_data.as_matrix()
+        count_data = np.array(count_data)
+        nr, nc = count_data.shape
+        count_data = count_data.reshape(count_data.size)  # turn into 1d vector
+        count_data = robjects.r.matrix(numpy2ri.py2rpy(count_data), nrow=nr, ncol=nc, byrow=True)
+        col_data = pd.DataFrame(
+            {'sample': samples, 'condition': conditions}).set_index('sample')
+        if additional_conditions is not None:
+            col_data = pd.merge(
+                col_data, additional_conditions, left_index=True, right_index=True)
+            f = list([str(x)
+                    for x in additional_conditions.columns]) + ['condition']
+            formula = '~' + "+".join(f)
+        else:
+            formula = '~ condition'
+        col_data = col_data.reset_index(drop=True)
+        col_data = mbf_r.convert_dataframe_to_r(
+            pd.DataFrame(col_data.to_dict('list')))
+        deseq_experiment = robjects.r('DESeqDataSetFromMatrix')(
+            countData=count_data, colData=col_data, design=robjects.Formula(formula))
+        deseq_experiment = robjects.r('DESeq')(deseq_experiment)
+        res = robjects.r('results')(deseq_experiment)
+        df = mbf_r.convert_dataframe_from_r(robjects.r('as.data.frame')(res))
+        return df
+
+    def compare(self, df, columns_a, columns_b):
+        import rpy2.robjects as robjects
+        robjects.r('library("DESeq2")')
+        columns = []
+        conditions = []
+        samples = []
+        for (name, cols) in [
+            ('c', columns_a),  # this must be the second value...
+            # this must be first in alphabetical sorting
+            ('base', columns_b),
+        ]:
+            for col in cols:
+                columns.append(col)
+                conditions.append(name)
+                samples.append(col)
+        count_data = df[columns]
+        df = self.call_DESeq2(count_data, samples, conditions)
+        df = df.rename(columns={
+            'log2FoldChange': 'log2FC',
+            'pvalue': 'p',
+            'padj': 'FDR',
+        })
+        return df[self.columns].reset_index(drop=True)
+
 
 # TODO: Quantile normalization
 # DESEq
@@ -190,3 +264,4 @@ class EdgeRUnpaired:
 # genomics - remove *_Biotypes - filtering first then applying should be enough.
 # refactor FDR
 # test laplaco offfset change makes recalc
+
