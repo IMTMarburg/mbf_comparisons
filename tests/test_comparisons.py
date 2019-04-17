@@ -1,10 +1,22 @@
 import pytest
+import pypipegraph as ppg
 import itertools
 from pytest import approx
 import pandas as pd
 from mbf_genomics import DelayedDataFrame
 from mbf_genomics.annotator import Constant
-from mbf_comparisons import Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired
+from mbf_comparisons import (
+    Comparison,
+    Log2FC,
+    TTest,
+    TTestPaired,
+    EdgeRUnpaired,
+    DESeq2Unpaired,
+)
+from mbf_qualitycontrol import do_qc
+from mbf_qualitycontrol.testing import assert_image_equal
+from mbf_sampledata import get_pasilla_data_subset
+
 from pypipegraph.testing import (
     # RaisesDirectOrInsidePipegraph,
     run_pipegraph,
@@ -19,7 +31,7 @@ dp, X = dppd()
 class TestComparisons:
     def test_simple(self):
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
-        a = Comparison(Log2FC(laplace_offset=0), {"a": ["a"], "b": ["b"]}, "a", "b")
+        a = Comparison(Log2FC(), {"a": ["a"], "b": ["b"]}, "a", "b", laplace_offset=0)
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
         assert (d.df[a["log2FC"]] == [-1.0, -2.0, -4.0]).all()
@@ -28,7 +40,7 @@ class TestComparisons:
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
         a = Constant("five", 5)
         b = Constant("ten", 10)
-        a = Comparison(Log2FC(laplace_offset=0), {"a": [a], "b": [b]}, "a", "b")
+        a = Comparison(Log2FC(), {"a": [a], "b": [b]}, "a", "b", laplace_offset=0)
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
         assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
@@ -38,7 +50,11 @@ class TestComparisons:
         a = Constant("five", 5)
         b = Constant("ten", 10)
         a = Comparison(
-            Log2FC(laplace_offset=0), {"a": [(a, "five")], "b": [(b, "ten")]}, "a", "b"
+            Log2FC(),
+            {"a": [(a, "five")], "b": [(b, "ten")]},
+            "a",
+            "b",
+            laplace_offset=0,
         )
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
@@ -49,7 +65,7 @@ class TestComparisons:
         a = Constant("five", 5)
         b = Constant("ten", 10)
         a = Comparison(
-            Log2FC(laplace_offset=0), {"a": [(a, 0)], "b": [(b, 0)]}, "a", "b"
+            Log2FC(), {"a": [(a, 0)], "b": [(b, 0)]}, "a", "b", laplace_offset=0
         )
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
@@ -84,7 +100,7 @@ class TestComparisons:
             ),
         )
         a = Comparison(
-            Log2FC(laplace_offset=0), {"a": ["a1", "a2"], "b": ["b1", "b2"]}, "a", "b"
+            Log2FC(), {"a": ["a1", "a2"], "b": ["b1", "b2"]}, "a", "b", laplace_offset=0
         )
         to_test = [
             (("log2FC", "==", -1.0), [-1.0]),
@@ -97,16 +113,17 @@ class TestComparisons:
             (("log2FC", "|>=", 2.0), [-2.0, -4.0]),
             (("log2FC", "|<=", 2.0), [-1.0, -2.0]),
             ((a["log2FC"], "<", -2.0), [-4.0]),
-            (("log2FC_no_such_column", "<", -2.0), ValueError),
+            (("log2FC_no_such_column", "<", -2.0), KeyError),
             (("log2FC", "|", -2.0), ValueError),
         ]
         filtered = {}
         for ii, (f, r) in enumerate(to_test):
-            if r == ValueError:
-                with pytest.raises(ValueError):
-                    a.filter(d, "new%i" % ii, [f])
+            if r in (ValueError, KeyError):
+                with pytest.raises(r):
+                    a.filter(d, [f], "new%i" % ii)
             else:
-                filtered[f] = a.filter(d, "new%i" % ii, [f])
+                filtered[f] = a.filter(d, [f], "new%i" % ii)
+                assert filtered[f].name == "new%i" % ii
                 force_load(filtered[f].annotate(), filtered[f].name)
 
         force_load(d.add_annotator(a), "somethingsomethingjob")
@@ -114,7 +131,7 @@ class TestComparisons:
         c = a["log2FC"]
         assert (d.df[c] == [-1.0, -2.0, -4.0]).all()
         for f, r in to_test:
-            if r != ValueError:
+            if r not in (ValueError, KeyError):
                 try:
                     assert filtered[f].df[c].values == approx(r)
                 except AssertionError:
@@ -142,6 +159,8 @@ class TestComparisons:
         }
 
         a = Comparison(TTest, gts, "A", "B")
+        b = a.filter(ddf, [("log2FC", ">", 2.38), ("p", "<", 0.05)])
+        assert b.name == "Filtered_A-B_log2FC_>_2.38__p_<_0.05"
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         # value calculated with R to double check.
@@ -321,19 +340,34 @@ class TestComparisons:
         )
         assert df.loc["PTGFR"][gts["T"]].sum() < df.loc["PTGFR"][gts["N"]].sum()
 
+    def test_edgeR_filter_on_max_count(self):
+        ddf, a, b = get_pasilla_data_subset()
+        gts = {"T": a, "N": b}
+        a = Comparison(EdgeRUnpaired(ignore_if_max_count_less_than=100), gts, "T", "N")
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        assert pd.isnull(ddf.df[a["log2FC"]]).any()
+        assert (pd.isnull(ddf.df[a["log2FC"]]) == pd.isnull(ddf.df[a["p"]])).all()
+        assert (pd.isnull(ddf.df[a["FDR"]]) == pd.isnull(ddf.df[a["p"]])).all()
 
     def test_deseq2(self):
         import mbf_sampledata
-        pasilla_data = pd.read_csv(mbf_sampledata.get_sample_path("mbf_comparisons/pasillaCount_deseq2.tsv.gz"),
-                                   sep=" ")
-        #pasilla_data = pasilla_data.set_index('Gene')
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
         pasilla_data.columns = [str(x) for x in pasilla_data.columns]
 
-        gts = {'treated': 
-                [x for x in pasilla_data.columns if x.startswith('treated')],
-               'untreated': [x for x in pasilla_data.columns if x.startswith('untreated')]}
-        ddf = DelayedDataFrame('ex', pasilla_data)
-        a = Comparison(DESeq2Unpaired(), gts, 'treated', 'untreated')
+        gts = {
+            "treated": [x for x in pasilla_data.columns if x.startswith("treated")],
+            "untreated": [x for x in pasilla_data.columns if x.startswith("untreated")],
+        }
+        ddf = DelayedDataFrame("ex", pasilla_data)
+        a = Comparison(DESeq2Unpaired(), gts, "treated", "untreated")
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         check = """# This is deseq2 version specific data- probably needs fixing if upgrading deseq2
@@ -345,13 +379,68 @@ class TestComparisons:
 ## FBgn0029896 258 -2.21 0.159 -13.9 5.40e-44 1.11e-40
 ## FBgn0034736 118 -2.56 0.185 -13.9 7.66e-44 1.26e-40
 """
-        df = ddf.df.sort_values(a['FDR'])
-        df = df.set_index('Gene')
+        df = ddf.df.sort_values(a["FDR"])
+        df = df.set_index("Gene")
         for row in check.split("\n"):
             row = row.strip()
-            if row and not row[0] == '#':
+            if row and not row[0] == "#":
                 row = row.split()
-                self.assertAlmostEqual(df.ix[row[0]][a['log2FC']], float(row[2]), places=2)
-                self.assertAlmostEqual(df.ix[row[0]][a['p']], float(row[5]), places=2)
-                self.assertAlmostEqual(df.ix[row[0]][a['FDR']], float(row[6]), places=2)
+                self.assertAlmostEqual(
+                    df.ix[row[0]][a["log2FC"]], float(row[2]), places=2
+                )
+                self.assertAlmostEqual(df.ix[row[0]][a["p"]], float(row[5]), places=2)
+                self.assertAlmostEqual(df.ix[row[0]][a["FDR"]], float(row[6]), places=2)
 
+
+@pytest.mark.usefixtures("new_pipegraph")
+class TestPPG:
+    def test_volcano_plot(self):
+        ppg.util.global_pipegraph.quiet = False
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        treated = [x for x in pasilla_data.columns if x.startswith("treated")]
+        untreated = [x for x in pasilla_data.columns if x.startswith("untreated")]
+        comp = Comparison(
+            TTest(),
+            {"treated": treated, "untreated": untreated},
+            "treated",
+            "untreated",
+        )
+        pasilla_data = DelayedDataFrame("pasilla", pasilla_data)
+        comp.filter(pasilla_data, [("log2FC", "|>=", 2.0), ("FDR", "<=", 0.05)])
+        jobs = do_qc(lambda x: "volcano" in str(x))
+        assert len(jobs) == 1
+        run_pipegraph()
+        assert_image_equal(jobs[0].filenames[0])
+
+    def test_ma_plot(self):
+        ppg.util.global_pipegraph.quiet = False
+        pasilla_data, treated, untreated = get_pasilla_data_subset()
+
+        comp = Comparison(
+            TTest(),
+            {"treated": treated, "untreated": untreated},
+            "treated",
+            "untreated",
+            laplace_offset=1,
+        )
+
+        comp.filter(
+            pasilla_data,
+            [
+                ("log2FC", "|>=", 2.0),
+                # ('FDR', '<=', 0.05),
+            ],
+        )
+        jobs = do_qc(lambda x: "ma_plot" in str(x))
+        assert len(jobs) == 1
+        run_pipegraph()
+        assert_image_equal(jobs[0].filenames[0])

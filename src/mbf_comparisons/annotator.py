@@ -1,13 +1,26 @@
 from mbf_genomics.annotator import Annotator
+import itertools
+import pypipegraph as ppg
 import numpy as np
 import pandas as pd
 import collections
+from mbf_qualitycontrol import register_qc, QCCallback, get_qc
+from mbf_genomics.util import (
+    parse_a_or_c_to_column,
+    parse_a_or_c_to_anno,
+    parse_a_or_c_to_plot_name,
+)
+import dppd
+
+dp, X = dppd.dppd()
 
 # import pypipegraph as ppg
 
 
 class Comparison(Annotator):
-    def __init__(self, comparison_strategy, groups_to_samples, a, b):
+    def __init__(
+        self, comparison_strategy, groups_to_samples, a, b, laplace_offset=1 / 1e6
+    ):
         """Create a comparison (a - b)
 
         Parameters:
@@ -38,6 +51,7 @@ class Comparison(Annotator):
             cn = self.name_column(col)
             self.columns.append(cn)
             self.column_lookup[col] = cn
+        self.laplace_offset = laplace_offset
 
     def name_column(self, col):
         return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name})"
@@ -46,7 +60,7 @@ class Comparison(Annotator):
         """look up the full column name from log2FC, p, FDR, etc"""
         return self.column_lookup[itm]
 
-    def filter(self, genes, new_name, filter_definition):
+    def filter(self, genes, filter_definition, new_name=None):
         """Turn a filter definition [(column, operator, threshold)...]
         into a filtered genes object.
 
@@ -56,9 +70,19 @@ class Comparison(Annotator):
             ('FDR', '<=', 0.05)
             ]
         """
-        return genes.filter(
-            new_name, self.definition_to_function(filter_definition), annotators=self
-        )
+        if new_name is None:
+            filter_str = []
+            for column, op, threshold in sorted(filter_definition):
+                filter_str.append(f"{column}_{op}_{threshold:.2f}")
+            filter_str = "__".join(filter_str)
+            new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
+
+        filter_func = self.definition_to_function(filter_definition)
+        res = genes.filter(new_name, filter_func, annotators=self)
+        if ppg.inside_ppg():
+            self.register_qc_volcano(genes, res, filter_func)
+            self.register_qc_ma_plot(genes, res, filter_func)
+        return res
 
     def definition_to_function(self, definition):
         functors = []
@@ -68,7 +92,9 @@ class Comparison(Annotator):
             elif column_name in self.column_lookup:
                 column_name = self.column_lookup[column_name]
             else:
-                raise ValueError(f"unknown column {column_name}", 'available', self.column_lookup)
+                raise KeyError(
+                    f"unknown column {column_name}", "available", self.column_lookup
+                )
             if op == "==":
                 f = (
                     lambda df, column_name=column_name: df[column_name] == threshold
@@ -124,7 +150,9 @@ class Comparison(Annotator):
     def calc(self, df):
         columns_a = self.sample_columns(self.comp[0])
         columns_b = self.sample_columns(self.comp[1])
-        comp = self.comparison_strategy.compare(df, columns_a, columns_b)
+        comp = self.comparison_strategy.compare(
+            df, columns_a, columns_b, self.laplace_offset
+        )
         res = {}
         for col in sorted(self.comparison_strategy.columns):
             res[self.name_column(col)] = comp[col]
@@ -133,11 +161,31 @@ class Comparison(Annotator):
     def dep_annos(self):
         """Return other annotators"""
         res = []
-        for c in self.samples_used():
-            if isinstance(c, Annotator):
-                res.append(c)
-            if isinstance(c, tuple) and isinstance(c[0], Annotator):
-                res.append(c[0])
+        for k in self.samples_used():
+            a = parse_a_or_c_to_anno(k)
+            if a is not None:
+                res.append(a)
+        return res
+
+    def deps(self, ddf):
+        from mbf_genomics.util import freeze
+
+        parameters = freeze(
+            [
+                (
+                    # self.comparison_strategy.__class__.__name__ , handled by column name
+                    ({k: sorted(v) for (k, v) in self.groups_to_samples.items()}),
+                    #   self.comp, # his handled by column name
+                    self.laplace_offset,
+                )
+            ]
+        )
+        res = [
+            ppg.ParameterInvariant(
+                "mbf_comparison.Comparison_%i" % hash(parameters), ()
+            )
+        ]
+        res.extend(getattr(self.comparison_strategy, "deps", lambda: [])())
         return res
 
     def samples_used(self):
@@ -148,20 +196,16 @@ class Comparison(Annotator):
     def sample_columns(self, coldef):
         res = []
         for k in self.groups_to_samples[coldef]:
-            if isinstance(k, str):
-                res.append(k)
-            elif isinstance(k, Annotator):
-                res.append(k.columns[0])
-            elif isinstance(k, tuple):
-                if isinstance(k[1], int):
-                    res.append(k[0].columns[k[1]])
-                else:
-                    res.append(k[1])
-            else:  # pragma: no cover - should have been handled by _check_input_dict
-                raise NotImplementedError(
-                    "Sample_columns encountered a case that should have been covered by _check_input_dict"
-                )
+            res.append(parse_a_or_c_to_column(k))
         return res
+
+    def plot_name(self, sample_column):
+        for g, samples in self.groups_to_samples.items():
+            for k in samples:
+                if parse_a_or_c_to_column(k) == sample_column:
+                    return parse_a_or_c_to_plot_name(k)
+
+        raise KeyError(sample_column)  #  pragma: no cover
 
     def _check_input_dict(self, groups_to_samples):
         if not isinstance(groups_to_samples, dict):
@@ -207,3 +251,122 @@ class Comparison(Annotator):
                 raise ValueError(
                     "Too few samples in %s for %s" % (x, self.comparison_strategy)
                 )
+
+    def register_qc_volcano(self, genes, filtered, filter_func):
+        output_filename = filtered.result_dir / "volcano.png"
+
+        def build():
+            def plot():
+                (
+                    dp(genes.df)
+                    .mutate(significant=filter_func(genes.df))
+                    .p9()
+                    .scale_color_many_categories(name="significant", shift=3)
+                    .scale_y_continuous(
+                        name="p",
+                        trans=dp.reverse_transform("log10"),
+                        labels=lambda xs: ["%.2g" % x for x in xs],
+                    )
+                    .add_vline(xintercept=1, _color="blue")
+                    .add_vline(xintercept=-1, _color="blue")
+                    .add_hline(yintercept=0.05, _color="blue")
+                    .add_rect(  # shade 'simply' significant regions
+                        xmin="xmin",
+                        xmax="xmax",
+                        ymin="ymin",
+                        ymax="ymax",
+                        _fill="lightgrey",
+                        data=pd.DataFrame(
+                            {
+                                "xmin": [-np.inf, 1],
+                                "xmax": [-1, np.inf],
+                                "ymin": [0, 0],
+                                "ymax": [0.05, 0.05],
+                            }
+                        ),
+                        _alpha=0.8,
+                    )
+                    .add_scatter(self["log2FC"], self["p"], color="significant")
+                    # .coord_trans(x="reverse", y="reverse")  # broken as of 2019-01-31
+                    .render(output_filename, width=8, height=6, dpi=300)
+                )
+
+            return ppg.FileGeneratingJob(output_filename, plot).depends_on(
+                genes.add_annotator(self)
+            )
+
+        try:
+            get_qc(output_filename)
+        except KeyError:
+            register_qc(output_filename, QCCallback(build))
+
+    def register_qc_ma_plot(self, genes, filtered, filter_func):
+        output_filename = filtered.result_dir / "ma_plot.png"
+
+        def build():
+            def plot():
+                from statsmodels.nonparametric.smoothers_lowess import lowess
+
+                df = genes.df[
+                    self.sample_columns(self.comp[0])
+                    + self.sample_columns(self.comp[1])
+                ]
+                df = df.assign(significant=filter_func(genes.df))
+                pdf = []
+                loes_pdfs = []
+                # Todo: how many times can you over0lopt this?
+                for a, b in itertools.combinations(
+                    [x for x in df.columns if not "significant" == x], 2
+                ):
+                    np_a = np.log2(df[a] + self.laplace_offset)
+                    np_b = np.log2(df[b] + self.laplace_offset)
+                    A = (np_a + np_b) / 2
+                    M = np_a - np_b
+                    pdf.append(
+                        pd.DataFrame(
+                            {
+                                "A": A,
+                                "M": M,
+                                "a": self.plot_name(a),
+                                "b": self.plot_name(b),
+                                "significant": df["significant"],
+                            }
+                        )
+                    )
+                    fitted = lowess(M, A, is_sorted=False)
+                    loes_pdfs.append(
+                        pd.DataFrame(
+                            {
+                                "a": self.plot_name(a),
+                                "b": self.plot_name(b),
+                                "A": fitted[:, 0],
+                                "M": fitted[:, 1],
+                            }
+                        )
+                    )
+                pdf = pd.concat(pdf)
+                pdf = pdf.assign(ab=[a + ":" + b for (a, b) in zip(pdf["a"], pdf["b"])])
+                loes_pdf = pd.concat(loes_pdfs)
+                loes_pdf = loes_pdf.assign(
+                    ab=[a + ":" + b for (a, b) in zip(loes_pdf["a"], loes_pdf["b"])]
+                )
+                (
+                    dp(pdf)
+                    .p9()
+                    .theme_bw(10)
+                    .add_hline(yintercept=0, _color="lightblue")
+                    .add_hline(yintercept=1, _color="lightblue")
+                    .add_hline(yintercept=-1, _color="lightblue")
+                    .scale_color_many_categories(name="significant", shift=3)
+                    .add_point("A", "M", color="significant", _size=1, _alpha=0.3)
+                    .add_line("A", "M", _color="blue", data=loes_pdf)
+                    .facet_wrap(["ab"])
+                    .title(f"MA {filtered.name}\n{a}")
+                    .render(output_filename, width=8, height=6)
+                )
+
+            return ppg.FileGeneratingJob(output_filename, plot).depends_on(
+                genes.add_annotator(self)
+            )
+
+        register_qc(output_filename, QCCallback(build))
