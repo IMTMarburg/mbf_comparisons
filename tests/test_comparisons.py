@@ -13,7 +13,7 @@ from mbf_comparisons import (
     EdgeRUnpaired,
     DESeq2Unpaired,
 )
-from mbf_qualitycontrol import do_qc
+from mbf_qualitycontrol import prune_qc, get_qc_jobs
 from mbf_qualitycontrol.testing import assert_image_equal
 from mbf_sampledata import get_pasilla_data_subset
 
@@ -27,7 +27,7 @@ from dppd import dppd
 dp, X = dppd()
 
 
-@pytest.mark.usefixtures("both_ppg_and_no_ppg")
+@pytest.mark.usefixtures("both_ppg_and_no_ppg_no_qc")
 class TestComparisons:
     def test_simple(self):
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
@@ -393,7 +393,7 @@ class TestComparisons:
 
 
 @pytest.mark.usefixtures("new_pipegraph")
-class TestPPG:
+class TestQC:
     def test_volcano_plot(self):
         ppg.util.global_pipegraph.quiet = False
         import mbf_sampledata
@@ -416,10 +416,12 @@ class TestPPG:
         )
         pasilla_data = DelayedDataFrame("pasilla", pasilla_data)
         comp.filter(pasilla_data, [("log2FC", "|>=", 2.0), ("FDR", "<=", 0.05)])
-        jobs = do_qc(lambda x: "volcano" in str(x))
-        assert len(jobs) == 1
+        prune_qc(lambda job: "volcano" in job.job_id)
         run_pipegraph()
-        assert_image_equal(jobs[0].filenames[0])
+        qc_jobs = list(get_qc_jobs())
+        qc_jobs = [x for x in qc_jobs if not x._pruned]
+        assert len(qc_jobs) == 1
+        assert_image_equal(qc_jobs[0].filenames[0])
 
     def test_ma_plot(self):
         ppg.util.global_pipegraph.quiet = False
@@ -440,7 +442,9 @@ class TestPPG:
                 # ('FDR', '<=', 0.05),
             ],
         )
-        jobs = do_qc(lambda x: "ma_plot" in str(x))
-        assert len(jobs) == 1
+        prune_qc(lambda job: "ma_plot" in job.job_id)
         run_pipegraph()
-        assert_image_equal(jobs[0].filenames[0])
+        qc_jobs = list(get_qc_jobs())
+        qc_jobs = [x for x in qc_jobs if not x._pruned]
+        assert len(qc_jobs) == 1
+        assert_image_equal(qc_jobs[0].filenames[0])

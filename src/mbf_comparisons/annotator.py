@@ -4,13 +4,14 @@ import pypipegraph as ppg
 import numpy as np
 import pandas as pd
 import collections
-from mbf_qualitycontrol import register_qc, QCCallback, get_qc
+from mbf_qualitycontrol import register_qc
 from mbf_genomics.util import (
     parse_a_or_c_to_column,
     parse_a_or_c_to_anno,
     parse_a_or_c_to_plot_name,
 )
 import dppd
+import dppd_plotnine  # noqa: F401
 
 dp, X = dppd.dppd()
 
@@ -170,11 +171,19 @@ class Comparison(Annotator):
     def deps(self, ddf):
         from mbf_genomics.util import freeze
 
+        sample_info = []
+        for group, samples in self.groups_to_samples.items():
+            for s in samples:
+                sample_info.append(
+                    (group, str(parse_a_or_c_to_anno(s)), parse_a_or_c_to_column(s))
+                )
+        sample_info.sort()
+
         parameters = freeze(
             [
                 (
                     # self.comparison_strategy.__class__.__name__ , handled by column name
-                    ({k: sorted(v) for (k, v) in self.groups_to_samples.items()}),
+                    sample_info,
                     #   self.comp, # his handled by column name
                     self.laplace_offset,
                 )
@@ -205,7 +214,7 @@ class Comparison(Annotator):
                 if parse_a_or_c_to_column(k) == sample_column:
                     return parse_a_or_c_to_plot_name(k)
 
-        raise KeyError(sample_column)  #  pragma: no cover
+        raise KeyError(sample_column)  # pragma: no cover
 
     def _check_input_dict(self, groups_to_samples):
         if not isinstance(groups_to_samples, dict):
@@ -253,120 +262,120 @@ class Comparison(Annotator):
                 )
 
     def register_qc_volcano(self, genes, filtered, filter_func):
+        """perform a volcano plot - not a straight annotator.register_qc function,
+        but called by .filter
+        """
         output_filename = filtered.result_dir / "volcano.png"
 
-        def build():
-            def plot():
-                (
-                    dp(genes.df)
-                    .mutate(significant=filter_func(genes.df))
-                    .p9()
-                    .scale_color_many_categories(name="significant", shift=3)
-                    .scale_y_continuous(
-                        name="p",
-                        trans=dp.reverse_transform("log10"),
-                        labels=lambda xs: ["%.2g" % x for x in xs],
-                    )
-                    .add_vline(xintercept=1, _color="blue")
-                    .add_vline(xintercept=-1, _color="blue")
-                    .add_hline(yintercept=0.05, _color="blue")
-                    .add_rect(  # shade 'simply' significant regions
-                        xmin="xmin",
-                        xmax="xmax",
-                        ymin="ymin",
-                        ymax="ymax",
-                        _fill="lightgrey",
-                        data=pd.DataFrame(
-                            {
-                                "xmin": [-np.inf, 1],
-                                "xmax": [-1, np.inf],
-                                "ymin": [0, 0],
-                                "ymax": [0.05, 0.05],
-                            }
-                        ),
-                        _alpha=0.8,
-                    )
-                    .add_scatter(self["log2FC"], self["p"], color="significant")
-                    # .coord_trans(x="reverse", y="reverse")  # broken as of 2019-01-31
-                    .render(output_filename, width=8, height=6, dpi=300)
+        def plot(output_filename):
+            (
+                dp(genes.df)
+                .mutate(significant=filter_func(genes.df))
+                .p9()
+                .scale_color_many_categories(name="significant", shift=3)
+                .scale_y_continuous(
+                    name="p",
+                    trans=dp.reverse_transform("log10"),
+                    labels=lambda xs: ["%.2g" % x for x in xs],
                 )
-
-            return ppg.FileGeneratingJob(output_filename, plot).depends_on(
-                genes.add_annotator(self)
+                .add_vline(xintercept=1, _color="blue")
+                .add_vline(xintercept=-1, _color="blue")
+                .add_hline(yintercept=0.05, _color="blue")
+                .add_rect(  # shade 'simply' significant regions
+                    xmin="xmin",
+                    xmax="xmax",
+                    ymin="ymin",
+                    ymax="ymax",
+                    _fill="lightgrey",
+                    data=pd.DataFrame(
+                        {
+                            "xmin": [-np.inf, 1],
+                            "xmax": [-1, np.inf],
+                            "ymin": [0, 0],
+                            "ymax": [0.05, 0.05],
+                        }
+                    ),
+                    _alpha=0.8,
+                )
+                .add_scatter(self["log2FC"], self["p"], color="significant")
+                # .coord_trans(x="reverse", y="reverse")  # broken as of 2019-01-31
+                .render(output_filename, width=8, height=6, dpi=300)
             )
 
-        try:
-            get_qc(output_filename)
-        except KeyError:
-            register_qc(output_filename, QCCallback(build))
+        return register_qc(
+            ppg.FileGeneratingJob(output_filename, plot).depends_on(
+                genes.add_annotator(self)
+            )
+        )
 
     def register_qc_ma_plot(self, genes, filtered, filter_func):
+        """perform an MA plot - not a straight annotator.register_qc function,
+        but called by .filter
+        """
         output_filename = filtered.result_dir / "ma_plot.png"
 
-        def build():
-            def plot():
-                from statsmodels.nonparametric.smoothers_lowess import lowess
+        def plot(output_filename):
+            from statsmodels.nonparametric.smoothers_lowess import lowess
 
-                df = genes.df[
-                    self.sample_columns(self.comp[0])
-                    + self.sample_columns(self.comp[1])
-                ]
-                df = df.assign(significant=filter_func(genes.df))
-                pdf = []
-                loes_pdfs = []
-                # Todo: how many times can you over0lopt this?
-                for a, b in itertools.combinations(
-                    [x for x in df.columns if not "significant" == x], 2
-                ):
-                    np_a = np.log2(df[a] + self.laplace_offset)
-                    np_b = np.log2(df[b] + self.laplace_offset)
-                    A = (np_a + np_b) / 2
-                    M = np_a - np_b
-                    pdf.append(
-                        pd.DataFrame(
-                            {
-                                "A": A,
-                                "M": M,
-                                "a": self.plot_name(a),
-                                "b": self.plot_name(b),
-                                "significant": df["significant"],
-                            }
-                        )
+            df = genes.df[
+                self.sample_columns(self.comp[0]) + self.sample_columns(self.comp[1])
+            ]
+            df = df.assign(significant=filter_func(genes.df))
+            pdf = []
+            loes_pdfs = []
+            # Todo: how many times can you over0lopt this?
+            for a, b in itertools.combinations(
+                [x for x in df.columns if not "significant" == x], 2
+            ):
+                np_a = np.log2(df[a] + self.laplace_offset)
+                np_b = np.log2(df[b] + self.laplace_offset)
+                A = (np_a + np_b) / 2
+                M = np_a - np_b
+                pdf.append(
+                    pd.DataFrame(
+                        {
+                            "A": A,
+                            "M": M,
+                            "a": self.plot_name(a),
+                            "b": self.plot_name(b),
+                            "significant": df["significant"],
+                        }
                     )
-                    fitted = lowess(M, A, is_sorted=False)
-                    loes_pdfs.append(
-                        pd.DataFrame(
-                            {
-                                "a": self.plot_name(a),
-                                "b": self.plot_name(b),
-                                "A": fitted[:, 0],
-                                "M": fitted[:, 1],
-                            }
-                        )
+                )
+                fitted = lowess(M, A, is_sorted=False)
+                loes_pdfs.append(
+                    pd.DataFrame(
+                        {
+                            "a": self.plot_name(a),
+                            "b": self.plot_name(b),
+                            "A": fitted[:, 0],
+                            "M": fitted[:, 1],
+                        }
                     )
-                pdf = pd.concat(pdf)
-                pdf = pdf.assign(ab=[a + ":" + b for (a, b) in zip(pdf["a"], pdf["b"])])
-                loes_pdf = pd.concat(loes_pdfs)
-                loes_pdf = loes_pdf.assign(
-                    ab=[a + ":" + b for (a, b) in zip(loes_pdf["a"], loes_pdf["b"])]
                 )
-                (
-                    dp(pdf)
-                    .p9()
-                    .theme_bw(10)
-                    .add_hline(yintercept=0, _color="lightblue")
-                    .add_hline(yintercept=1, _color="lightblue")
-                    .add_hline(yintercept=-1, _color="lightblue")
-                    .scale_color_many_categories(name="significant", shift=3)
-                    .add_point("A", "M", color="significant", _size=1, _alpha=0.3)
-                    .add_line("A", "M", _color="blue", data=loes_pdf)
-                    .facet_wrap(["ab"])
-                    .title(f"MA {filtered.name}\n{a}")
-                    .render(output_filename, width=8, height=6)
-                )
-
-            return ppg.FileGeneratingJob(output_filename, plot).depends_on(
-                genes.add_annotator(self)
+            pdf = pd.concat(pdf)
+            pdf = pdf.assign(ab=[a + ":" + b for (a, b) in zip(pdf["a"], pdf["b"])])
+            loes_pdf = pd.concat(loes_pdfs)
+            loes_pdf = loes_pdf.assign(
+                ab=[a + ":" + b for (a, b) in zip(loes_pdf["a"], loes_pdf["b"])]
+            )
+            (
+                dp(pdf)
+                .p9()
+                .theme_bw(10)
+                .add_hline(yintercept=0, _color="lightblue")
+                .add_hline(yintercept=1, _color="lightblue")
+                .add_hline(yintercept=-1, _color="lightblue")
+                .scale_color_many_categories(name="significant", shift=3)
+                .add_point("A", "M", color="significant", _size=1, _alpha=0.3)
+                .add_line("A", "M", _color="blue", data=loes_pdf)
+                .facet_wrap(["ab"])
+                .title(f"MA {filtered.name}\n{a}")
+                .render(output_filename, width=8, height=6)
             )
 
-        register_qc(output_filename, QCCallback(build))
+        return register_qc(
+            ppg.FileGeneratingJob(output_filename, plot).depends_on(
+                genes.add_annotator(self)
+            )
+        )
