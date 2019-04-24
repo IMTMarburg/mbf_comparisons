@@ -115,6 +115,11 @@ class TestComparisons:
             ((a["log2FC"], "<", -2.0), [-4.0]),
             (("log2FC_no_such_column", "<", -2.0), KeyError),
             (("log2FC", "|", -2.0), ValueError),
+
+            ([
+                ("log2FC", "|>=", 2.0),
+                ("log2FC", "<=", 0),
+            ], [-2.0, -4.0]),
         ]
         filtered = {}
         for ii, (f, r) in enumerate(to_test):
@@ -122,9 +127,9 @@ class TestComparisons:
                 with pytest.raises(r):
                     a.filter(d, [f], "new%i" % ii)
             else:
-                filtered[f] = a.filter(d, [f], "new%i" % ii)
-                assert filtered[f].name == "new%i" % ii
-                force_load(filtered[f].annotate(), filtered[f].name)
+                filtered[tuple(f)] = a.filter(d, [f] if isinstance(f, tuple) else f, "new%i" % ii)
+                assert filtered[tuple(f)].name == "new%i" % ii
+                force_load(filtered[tuple(f)].annotate(), filtered[tuple(f)].name)
 
         force_load(d.add_annotator(a), "somethingsomethingjob")
         run_pipegraph()
@@ -133,7 +138,7 @@ class TestComparisons:
         for f, r in to_test:
             if r not in (ValueError, KeyError):
                 try:
-                    assert filtered[f].df[c].values == approx(r)
+                    assert filtered[tuple(f)].df[c].values == approx(r)
                 except AssertionError:
                     print(f)
                     raise

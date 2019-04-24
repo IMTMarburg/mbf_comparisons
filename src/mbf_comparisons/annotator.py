@@ -98,42 +98,42 @@ class Comparison(Annotator):
                 )
             if op == "==":
                 f = (
-                    lambda df, column_name=column_name: df[column_name] == threshold
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name] == threshold
                 )  # noqa: E03
             elif op == ">":
                 f = (
-                    lambda df, column_name=column_name: df[column_name] > threshold
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name] > threshold
                 )  # noqa: E03
             elif op == "<":
                 f = (
-                    lambda df, column_name=column_name: df[column_name] < threshold
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name] < threshold
                 )  # noqa: E03
             elif op == ">=":
                 f = (
-                    lambda df, column_name=column_name: df[column_name] >= threshold
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name] >= threshold
                 )  # noqa: E03
             elif op == "<=":
                 f = (
-                    lambda df, column_name=column_name: df[column_name] <= threshold
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name] <= threshold
                 )  # noqa: E03
             elif op == "|>":
                 f = (
-                    lambda df, column_name=column_name: df[column_name].abs()
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
                     > threshold  # noqa: E03
                 )
             elif op == "|<":
                 f = (
-                    lambda df, column_name=column_name: df[column_name].abs()
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
                     < threshold
                 )  # noqa: E03
             elif op == "|>=":
                 f = (
-                    lambda df, column_name=column_name: df[column_name].abs()
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
                     >= threshold
                 )  # noqa: E03
             elif op == "|<=":
                 f = (
-                    lambda df, column_name=column_name: df[column_name].abs()
+                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
                     <= threshold
                 )  # noqa: E03
             else:
