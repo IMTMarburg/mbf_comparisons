@@ -12,6 +12,7 @@ from mbf_qualitycontrol.testing.fixtures import (  # noqa: F401
     new_pipegraph_no_qc,
     both_ppg_and_no_ppg_no_qc,
 )
+from mbf_genomics.testing.fixtures import clear_annotators  # noqa:F401
 
 
 def pytest_generate_tests(metafunc):

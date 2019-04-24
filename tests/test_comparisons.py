@@ -87,7 +87,7 @@ class TestComparisons:
         with pytest.raises(ValueError):
             Comparison(Log2FC, {"a": [Constant("x", "5"), 1], "b": ["b"]}, "a", "b")
 
-    def test_multi_plus_filter(self):
+    def test_multi_plus_filter(self, clear_annotators):
         d = DelayedDataFrame(
             "ex1",
             pd.DataFrame(
@@ -96,12 +96,16 @@ class TestComparisons:
                     "a2": [1 * 0.99, 2 * 0.99, 3 * 0.99],
                     "b1": [2 * 0.99, 8 * 0.99, (16 * 3) * 0.99],
                     "b2": [2 / 0.99, 8 / 0.99, (16 * 3) / 0.99],
+                    "delta": [10, 20, 30],
                 }
             ),
         )
         a = Comparison(
             Log2FC(), {"a": ["a1", "a2"], "b": ["b1", "b2"]}, "a", "b", laplace_offset=0
         )
+        anno1 = Constant("shu1", 5)
+        anno2 = Constant("shu2", 5)  # noqa: F841
+        anno3 = Constant("shu3", 5)  # noqa: F841
         to_test = [
             (("log2FC", "==", -1.0), [-1.0]),
             (("log2FC", ">", -2.0), [-1.0]),
@@ -113,21 +117,24 @@ class TestComparisons:
             (("log2FC", "|>=", 2.0), [-2.0, -4.0]),
             (("log2FC", "|<=", 2.0), [-1.0, -2.0]),
             ((a["log2FC"], "<", -2.0), [-4.0]),
-            (("log2FC_no_such_column", "<", -2.0), KeyError),
             (("log2FC", "|", -2.0), ValueError),
-
-            ([
-                ("log2FC", "|>=", 2.0),
-                ("log2FC", "<=", 0),
-            ], [-2.0, -4.0]),
+            ([("log2FC", "|>=", 2.0), ("log2FC", "<=", 0)], [-2.0, -4.0]),
+            ((anno1, ">=", 5), [-1, -2.0, -4.0]),
+            (((anno1, 0), ">=", 5), [-1, -2.0, -4.0]),
+            (("shu2", ">=", 5), [-1, -2.0, -4.0]),
+            (("delta", ">", 10), [-2.0, -4.0]),
         ]
+        if not ppg.inside_ppg():  # can't test for missing columns in ppg.
+            to_test.extend([(("log2FC_no_such_column", "<", -2.0), KeyError)])
         filtered = {}
         for ii, (f, r) in enumerate(to_test):
             if r in (ValueError, KeyError):
                 with pytest.raises(r):
                     a.filter(d, [f], "new%i" % ii)
             else:
-                filtered[tuple(f)] = a.filter(d, [f] if isinstance(f, tuple) else f, "new%i" % ii)
+                filtered[tuple(f)] = a.filter(
+                    d, [f] if isinstance(f, tuple) else f, "new%i" % ii
+                )
                 assert filtered[tuple(f)].name == "new%i" % ii
                 force_load(filtered[tuple(f)].annotate(), filtered[tuple(f)].name)
 

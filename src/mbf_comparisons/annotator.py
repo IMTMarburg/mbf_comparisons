@@ -4,7 +4,7 @@ import pypipegraph as ppg
 import numpy as np
 import pandas as pd
 import collections
-from mbf_qualitycontrol import register_qc
+from mbf_qualitycontrol import register_qc, qc_disabled
 from mbf_genomics.util import (
     parse_a_or_c_to_column,
     parse_a_or_c_to_anno,
@@ -67,8 +67,16 @@ class Comparison(Annotator):
 
         Example:
         comp.filter(genes, '2x', [
-            (log2FC, '|>', 1),  #absolute
-            ('FDR', '<=', 0.05)
+            ('FDR', '<=', 0.05) # a name from our comparison strategy - inspect column_lookup to list
+            ('log2FC', '|>', 1),  #absolute
+            ...
+            (anno, '>=', 50),
+            ((anno, 1), '>=', 50),  # for the second column of the annotator
+            ((anno, 'columnX'), '>=', 50),  # for the second column of the annotator
+            ('annotator_columnX', '=>' 50), # search for an annotator with that column. Use if exactly one, complain otherwise
+
+
+
             ]
         """
         if new_name is None:
@@ -78,75 +86,16 @@ class Comparison(Annotator):
             filter_str = "__".join(filter_str)
             new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
 
-        filter_func = self.definition_to_function(filter_definition)
-        res = genes.filter(new_name, filter_func, annotators=self)
-        if ppg.inside_ppg():
+        lookup = self.column_lookup.copy()
+        for c in self.columns:
+            lookup[c] = c
+
+        filter_func, annos = genes.definition_to_function(filter_definition, lookup)
+        res = genes.filter(new_name, filter_func, annotators=annos)
+        if not qc_disabled():
             self.register_qc_volcano(genes, res, filter_func)
             self.register_qc_ma_plot(genes, res, filter_func)
         return res
-
-    def definition_to_function(self, definition):
-        functors = []
-        for column_name, op, threshold in definition:
-            if column_name in self.columns:
-                pass
-            elif column_name in self.column_lookup:
-                column_name = self.column_lookup[column_name]
-            else:
-                raise KeyError(
-                    f"unknown column {column_name}", "available", self.column_lookup
-                )
-            if op == "==":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name] == threshold
-                )  # noqa: E03
-            elif op == ">":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name] > threshold
-                )  # noqa: E03
-            elif op == "<":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name] < threshold
-                )  # noqa: E03
-            elif op == ">=":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name] >= threshold
-                )  # noqa: E03
-            elif op == "<=":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name] <= threshold
-                )  # noqa: E03
-            elif op == "|>":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
-                    > threshold  # noqa: E03
-                )
-            elif op == "|<":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
-                    < threshold
-                )  # noqa: E03
-            elif op == "|>=":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
-                    >= threshold
-                )  # noqa: E03
-            elif op == "|<=":
-                f = (
-                    lambda df, column_name=column_name, threshold=threshold: df[column_name].abs()
-                    <= threshold
-                )  # noqa: E03
-            else:
-                raise ValueError(f"invalid operator {op}")
-            functors.append(f)
-
-        def filter_func(df):
-            keep = np.ones(len(df), bool)
-            for f in functors:
-                keep &= f(df)
-            return keep
-
-        return filter_func
 
     def calc(self, df):
         columns_a = self.sample_columns(self.comp[0])
@@ -272,7 +221,7 @@ class Comparison(Annotator):
                 dp(genes.df)
                 .mutate(significant=filter_func(genes.df))
                 .p9()
-                .scale_color_many_categories(name="significant", shift=3)
+                .scale_color_many_categories(name="regulated", shift=3)
                 .scale_y_continuous(
                     name="p",
                     trans=dp.reverse_transform("log10"),
