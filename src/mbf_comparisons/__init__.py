@@ -11,8 +11,8 @@ finally:
     del get_distribution, DistributionNotFound
 
 
-from .annotator import Comparison
-from .comparisons import Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired
+from .comparisons import Comparisons
+from .methods import Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired
 
 
-__all__ = [Comparison, Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired]
+__all__ = [Comparisons, Log2FC, TTest, TTestPaired, EdgeRUnpaired, DESeq2Unpaired]

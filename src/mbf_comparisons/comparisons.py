@@ -1,247 +1,225 @@
-import numpy as np
-import pypipegraph as ppg
+import functools
 import pandas as pd
-import scipy.stats as ss
-from statsmodels.stats.multitest import multipletests
+import pypipegraph as ppg
+from mbf_qualitycontrol import register_qc, qc_disabled
+from dppd import dppd
+import dppd_plotnine  # noqa: F401
+from mbf_genomics.util import parse_a_or_c
+from mbf_genomics import DelayedDataFrame
+from .annotator import ComparisonAnnotator
+
+dp, X = dppd()
 
 
-class Log2FC:
-    min_sample_count = 0
+class Comparisons:
+    """A ddf + comparison groups,
+    ready for actually doing comparisons
 
-    def __init__(self):
-        self.columns = ["log2FC"]
-        self.name = "simple"
+    Paramaters:
 
-    def compare(self, df, columns_a, columns_b, laplace_offset):
-        a = np.log2(df[columns_a] + laplace_offset)
-        b = np.log2(df[columns_b] + laplace_offset)
-        logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
-        return pd.DataFrame({"log2FC": logFC})
+        groups_to_samples: { keyX: [columnA, annoB, (annoC, column_name), (annoC, 2),
+                                keyY: ..., ...}
+            keyX: one of the keys of groups_to_samples
+            keyY: one of the keys of groups_to_samples
+    """
 
-
-class TTest:
-    """Standard students t-test, independent on log2FC + benjamini hochberg"""
-
-    min_sample_count = 3
-
-    def __init__(self, equal_variance=False):
-        self.equal_var = equal_variance
-        self.columns = ["log2FC", "p", "FDR"]
-        self.name = "ttest"
-
-    def compare(self, df, columns_a, columns_b, laplace_offset):
-        a = np.log2(df[columns_a] + laplace_offset)
-        b = np.log2(df[columns_b] + laplace_offset)
-        logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
-        p = ss.ttest_ind(a, b, axis=1, equal_var=self.equal_var, nan_policy="omit")[1]
-        fdr = multipletests(p, method="fdr_bh")[1]
-        return pd.DataFrame({"log2FC": logFC, "p": p, "FDR": fdr})
-
-
-class TTestPaired:
-    """Standard students t-test, paired, on log2FC + benjamini hochberg"""
-
-    min_sample_count = 3
-
-    def __init__(self):
-        self.columns = ["log2FC", "p", "FDR"]
-        self.name = "ttest_paired"
-
-    def compare(self, df, columns_a, columns_b, laplace_offset):
-        a = np.log2(df[columns_a] + laplace_offset)
-        b = np.log2(df[columns_b] + laplace_offset)
-        logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
-        p = ss.ttest_rel(a, b, axis=1, nan_policy="omit")[1]
-        fdr = multipletests(p, method="fdr_bh")[1]
-        return pd.DataFrame({"log2FC": logFC, "p": p, "FDR": fdr})
-
-
-class EdgeRUnpaired:
-
-    min_sample_count = 3
-    name = "edgeRunpaired"
-    columns = ["log2FC", "p", "FDR"]
-
-    def __init__(self, ignore_if_max_count_less_than=None, manual_dispersion_value=0.4):
-        self.ignore_if_max_count_less_than = ignore_if_max_count_less_than
-        self.manual_dispersion_value = manual_dispersion_value
-
-    def deps(self):
-        import rpy2.robjects as ro
-
-        ro.r("library('edgeR')")
-        version = str(ro.r("packageVersion")("edgeR"))
-        return ppg.ParameterInvariant(
-            self.__class__.__name__ + "_" + self.name,
-            (version, self.ignore_if_max_count_less_than),
+    def __init__(self, ddf, groups_to_samples):
+        if not isinstance(ddf, DelayedDataFrame):
+            raise ValueError("Ddf must be a DelayedDataFrame")
+        self.ddf = ddf
+        self.groups_to_samples = self._check_input_dict(groups_to_samples)
+        self.sample_column_to_group = self._sample_columns_to_group()
+        self.samples = functools.reduce(
+            list.__add__, [x[1] for x in sorted(self.groups_to_samples.items())]
         )
+        self.name = "comparison__" + "_".join(sorted(self.groups_to_samples.keys()))
+        self.result_dir = self.ddf.result_dir / self.name
+        self.result_dir.mkdir(exist_ok=True, parents=True)
+        if ppg.inside_ppg():
+            ppg.assert_uniqueness_of_object(self)
+            if not hasattr(ppg.util.global_pipegraph, "_mbf_comparisons_name_dedup"):
+                ppg.util.global_pipegraph._mbf_comparisons_name_dedup = set()
+            for name in self.groups_to_samples:
+                if name in ppg.util.global_pipegraph._mbf_comparisons_name_dedup:
+                    raise ValueError(
+                        f"Comparisons group {name} defined in multiple Comparisons - not supported"
+                    )
 
-    def edgeR_comparison(
-        self, df, columns_a, columns_b, library_sizes=None, manual_dispersion_value=0.4
-    ):
-        """Call edgeR exactTest comparing two groups.
-        Resulting dataframe is in df order.
-        """
-        import mbf_r
-        import math
-        import rpy2.robjects as ro
-        import rpy2.robjects.numpy2ri as numpy2ri
+        self.register_qc()
 
-        ro.r("library(edgeR)")
-        input_df = df[columns_a + columns_b]
-        input_df.columns = ["X_%i" % x for x in range(len(input_df.columns))]
-        if library_sizes is not None:  # pragma: no cover
-            samples = pd.DataFrame({"lib.size": library_sizes})
-        else:
-            samples = pd.DataFrame({"lib.size": input_df.sum(axis=0)})
-        samples.insert(0, "group", ["b"] * len(columns_b) + ["a"] * len(columns_a))
-        r_counts = mbf_r.convert_dataframe_to_r(input_df)
-        r_samples = mbf_r.convert_dataframe_to_r(samples)
-        y = ro.r("DGEList")(
-            counts=r_counts,
-            samples=r_samples,
-            **{
-                "lib.size": ro.r("as.vector")(
-                    numpy2ri.py2rpy(np.array(samples["lib.size"]))
-                )
-            }
-        )
-        # apply TMM normalization
-        y = ro.r("calcNormFactors")(y)
-        if len(columns_a) == 1 and len(columns_b) == 1:  # pragma: no cover
-            # not currently used.
-            z = manual_dispersion_value
-            e = ro.r("exactTest")(y, dispersion=math.pow(manual_dispersion_value, 2))
-            """
-            you are attempting to estimate dispersions without any replicates.
-            Since this is not possible, there are several inferior workarounds to come up with something
-            still semi-useful.
-            1. pick a reasonable dispersion value from "Experience": 0.4 for humans, 0.1 for genetically identical model organisms, 0.01 for technical replicates. We'll try this for now.
-            2. estimate dispersions on a number of genes that you KNOW to be not differentially expressed.
-            3. In case of multiple factor experiments, discard the least important factors and treat the samples as replicates.
-            4. just use logFC and forget about significance.
-            """
-        else:
-            z = ro.r("estimateDisp")(y, robust=True)
-            e = ro.r("exactTest")(z)
-        res = ro.r("topTags")(e, n=len(input_df), **{"sort.by": "none"})
-        result = mbf_r.convert_dataframe_from_r(res[0])
+    def a_vs_b(self, a, b, method, laplace_offset=1 / 1e6):
+        if a not in self.groups_to_samples:
+            raise KeyError(a)
+        if b not in self.groups_to_samples:
+            raise KeyError(a)
+        if not hasattr(method, "compare"):
+            raise TypeError(f"{method} had no method compare")
+        res = ComparisonAnnotator(self, a, b, method, laplace_offset)
+        self.ddf += res
+        return res
+
+    def _check_input_dict(self, groups_to_samples):
+        if not isinstance(groups_to_samples, dict):
+            raise ValueError("groups_to_samples must be a dict")
+        for k, v in groups_to_samples.items():
+            if not isinstance(k, str):
+                raise ValueError("keys must be str, was %s %s" % (k, type(k)))
+            v = [parse_a_or_c(x) for x in v]
+            groups_to_samples[k] = v
+
+        return groups_to_samples
+
+    def _sample_columns_to_group(self):
+        result = {}
+        for group, samples in self.groups_to_samples.items():
+            for ac in samples:
+                c = ac[1]
+                if c in result:
+                    raise ValueError(
+                        f"Sample in multiple groups - not supported {ac}, {group}, {result[ac]}"
+                    )
+                result[c] = group
         return result
 
-    def compare(self, df, columns_a, columns_b, _laplace_offset):
-        # laplace offset is ignored, edgeR works on raw data
-        value_columns = columns_a + columns_b
-        # we need to go by key, since filter out nan rows.
-        idx = ["G%i" % ii for ii in range(len(df))]
-        input_df = df[value_columns]
-        input_df = input_df.assign(idx=idx)
-        input_df = input_df.set_index("idx")
-        if pd.isnull(input_df).any().any():  # pragma: no cover
-            raise ValueError("Nans before filtering in edgeR input")
+    def register_qc(self):
+        if not qc_disabled():
+            self.register_qc_distribution()
+            self.register_qc_pca()
+            self.register_qc_correlation()
 
-        if self.ignore_if_max_count_less_than is not None:
-            max_raw_count_per_gene = input_df.max(axis=1)
-            input_df.loc[
-                max_raw_count_per_gene < self.ignore_if_max_count_less_than, :
-            ] = np.nan
-        # does not matter any or all since we set them all above.
-        input_df = input_df[~pd.isnull(input_df[value_columns]).all(axis=1)]
+    def find_variable_name(self):
+        for anno, column in self.samples:
+            if anno is not None and hasattr(anno, "unit"):
+                return anno.unit
+        return "value"
 
-        differential = self.edgeR_comparison(
-            input_df,
-            columns_a,
-            columns_b,
-            manual_dispersion_value=self.manual_dispersion_value,
+    def get_plot_name(self, column):
+        for ac in self.samples:
+            if ac[1] == column:
+                if ac[0] is not None:
+                    return getattr(ac[0], "plot_name", column)
+                else:
+                    return column
+        raise KeyError(column)
+
+    def get_df(self):
+        return self.ddf.df[[column for anno, column in self.samples]]
+
+    def register_qc_distribution(self):
+        output_filename = self.result_dir / "distribution.png"
+
+        def plot(output_filename):
+            return (
+                dp(self.get_df())
+                .melt(var_name="sample", value_name="y")
+                .assign(
+                    var_name=[self.get_plot_name(x) for x in X["sample"]],
+                    group=[self.sample_column_to_group[x] for x in X["sample"]],
+                )
+                .p9()
+                .theme_bw()
+                .annotation_stripes()
+                .geom_violin(dp.aes("sample", "y"), width=0.5)
+                .add_boxplot(x="sample", y="y", _width=0.1, _fill=None, color="group")
+                .scale_color_many_categories()
+                .scale_y_continuous(trans="log10", name=self.find_variable_name())
+                .turn_x_axis_labels()
+                .hide_x_axis_title()
+                .render(output_filename)
+            )
+
+        return register_qc(
+            ppg.FileGeneratingJob(output_filename, plot).depends_on(self.deps())
         )
-        result = {"FDR": [], "p": [], "log2FC": []}
-        for key in idx:
-            try:
-                row = differential.loc[key]
-                result["FDR"].append(row["FDR"])
-                result["p"].append(row["PValue"])
-                result["log2FC"].append(row["logFC"])
-            except KeyError:
-                result["FDR"].append(np.nan)
-                result["p"].append(np.nan)
-                result["log2FC"].append(np.nan)
-        return pd.DataFrame(result)
-
-
-class DESeq2Unpaired:
-    min_sample_count = 3
-    name = "DESeq2unpaired"
-    columns = ["log2FC", "p", "FDR"]
 
     def deps(self):
-        import rpy2.robjects as ro
+        return [
+            self.ddf.add_annotator(ac[0]) for ac in self.samples if ac[0] is not None
+        ] + [
+            self.ddf.load()
+        ]  # you might be working with an anno less ddf afterall
 
-        ro.r("library('DESeq2')")
-        version = str(ro.r("packageVersion")("DESeq2"))
-        return ppg.ParameterInvariant(
-            self.__class__.__name__ + "_" + self.name, (version,)
+    def register_qc_pca(self):
+        output_filename = self.result_dir / "pca.png"
+
+        def plot(output_filename):
+            import sklearn.decomposition as decom
+
+            pca = decom.PCA(n_components=2, whiten=False)
+            data = self.get_df()
+            # min max scaling 0..1 per gene
+            data = data.sub(data.min(axis=1), axis=0)
+            data = data.div(data.max(axis=1), axis=0)
+
+            data = data[~pd.isnull(data).any(axis=1)]  # can' do pca on NAN values
+            pca.fit(data.T)
+            xy = pca.transform(data.T)
+            title = "PCA %s (%s)\nExplained variance: x %.2f%%, y %.2f%%" % (
+                self.ddf.name,
+                self.find_variable_name(),
+                pca.explained_variance_ratio_[0] * 100,
+                pca.explained_variance_ratio_[1] * 100,
+            )
+            plot_df = pd.DataFrame(
+                {
+                    "x": xy[:, 0],
+                    "y": xy[:, 1],
+                    "label": [self.get_plot_name(c) for (a, c) in self.samples],
+                    "group": [
+                        self.sample_column_to_group[c] for (a, c) in self.samples
+                    ],
+                }
+            )
+            (
+                dp(plot_df)
+                .p9()
+                .theme_bw()
+                .add_scatter("x", "y", color="group")
+                .add_text(
+                    "x",
+                    "y",
+                    "label",
+                    _adjust_text={
+                        "expand_points": (2, 2),
+                        "arrowprops": {"arrowstyle": "->", "color": "darkgrey"},
+                    },
+                )
+                .scale_color_many_categories()
+                .title(title)
+                .render(output_filename, width=8, height=6)
+            )
+
+        return register_qc(
+            ppg.FileGeneratingJob(output_filename, plot).depends_on(self.deps())
         )
 
-    def call_DESeq2(self, count_data, samples, conditions):
-        """Call DESeq2.
-        @count_data is a DataFrame with 'samples' as the column names.
-        @samples is a list. @conditions as well. Condition is the one you're contrasting on.
-        You can add additional_conditions (a DataFrame, index = samples) which DESeq2 will
-        keep under consideration (changes the formula).
-        """
-        import rpy2.robjects as robjects
-        import rpy2.robjects.numpy2ri as numpy2ri
-        import mbf_r
+    def register_qc_correlation(self):
+        output_filename = self.result_dir / "pearson_correlation.png"
 
-        count_data = count_data.as_matrix()
-        count_data = np.array(count_data)
-        nr, nc = count_data.shape
-        count_data = count_data.reshape(count_data.size)  # turn into 1d vector
-        count_data = robjects.r.matrix(
-            numpy2ri.py2rpy(count_data), nrow=nr, ncol=nc, byrow=True
+        def plot(output_filename):
+            data = self.get_df()
+            data = data.sub(data.min(axis=1), axis=0)
+            data = data.div(data.max(axis=1), axis=0)
+            # data -= data.min()  # min max scaling 0..1 per gene
+            # data /= data.max()
+            data = data[
+                ~pd.isnull(data).any(axis=1)
+            ]  # can' do correlation on NAN values
+            data.columns = [self.get_plot_name(x) for x in data.columns]
+            pdf = pd.melt(data.corr().reset_index(), "index")
+            (
+                dp(pdf)
+                .p9()
+                .add_tile("index", "variable", fill="value")
+                .scale_fill_gradient2(
+                    "blue", "white", "red", limits=[-1, 1], midpoint=0
+                )
+                .hide_x_axis_title()
+                .hide_y_axis_title()
+                .turn_x_axis_labels()
+                .render(output_filename)
+            )
+
+        return register_qc(
+            ppg.FileGeneratingJob(output_filename, plot).depends_on(self.deps())
         )
-        col_data = pd.DataFrame({"sample": samples, "condition": conditions}).set_index(
-            "sample"
-        )
-        formula = "~ condition"
-        col_data = col_data.reset_index(drop=True)
-        col_data = mbf_r.convert_dataframe_to_r(pd.DataFrame(col_data.to_dict("list")))
-        deseq_experiment = robjects.r("DESeqDataSetFromMatrix")(
-            countData=count_data, colData=col_data, design=robjects.Formula(formula)
-        )
-        deseq_experiment = robjects.r("DESeq")(deseq_experiment)
-        res = robjects.r("results")(deseq_experiment)
-        df = mbf_r.convert_dataframe_from_r(robjects.r("as.data.frame")(res))
-        return df
-
-    def compare(self, df, columns_a, columns_b, _laplace_offset):
-        # laplace_offset is ignored
-        import rpy2.robjects as robjects
-
-        robjects.r('library("DESeq2")')
-        columns = []
-        conditions = []
-        samples = []
-        for (name, cols) in [
-            ("c", columns_a),  # this must be the second value...
-            # this must be first in alphabetical sorting
-            ("base", columns_b),
-        ]:
-            for col in cols:
-                columns.append(col)
-                conditions.append(name)
-                samples.append(col)
-        count_data = df[columns]
-        df = self.call_DESeq2(count_data, samples, conditions)
-        df = df.rename(
-            columns={"log2FoldChange": "log2FC", "pvalue": "p", "padj": "FDR"}
-        )
-        return df[self.columns].reset_index(drop=True)
-
-
-# TODO: Quantile normalization
-# DESEq
-# DESEq2
-# edger
-# genomics - remove *_Biotypes - filtering first then applying should be enough.
-# refactor FDR
-# test laplaco offfset change makes recalc

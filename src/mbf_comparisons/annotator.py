@@ -1,15 +1,10 @@
-from mbf_genomics.annotator import Annotator
 import itertools
 import pypipegraph as ppg
 import numpy as np
 import pandas as pd
-import collections
 from mbf_qualitycontrol import register_qc, qc_disabled
-from mbf_genomics.util import (
-    parse_a_or_c_to_column,
-    parse_a_or_c_to_anno,
-    parse_a_or_c_to_plot_name,
-)
+from mbf_genomics.util import parse_a_or_c_to_anno
+from mbf_genomics.annotator import Annotator
 import dppd
 import dppd_plotnine  # noqa: F401
 
@@ -18,19 +13,14 @@ dp, X = dppd.dppd()
 # import pypipegraph as ppg
 
 
-class Comparison(Annotator):
+class ComparisonAnnotator(Annotator):
     def __init__(
-        self, comparison_strategy, groups_to_samples, a, b, laplace_offset=1 / 1e6
+        self, comparisons, group_a, group_b, comparison_strategy, laplace_offset=1 / 1e6
     ):
         """Create a comparison (a - b)
 
-        Parameters:
-            comparison_strategy:  a ComparisonStrategy - see mbf_comparisons.comparisons
-            groups_to_samples: { keyX: [columnA, annoB, (annoC, column_name), (annoC, 2),
-                                keyY: ...}
-            a: one of the keys of groups_to_samples
-            b: one of the keys of groups_to_samples
             """
+        self.comparisons = comparisons
 
         if hasattr(comparison_strategy, "__call__"):
             self.comparison_strategy = comparison_strategy()
@@ -43,9 +33,7 @@ class Comparison(Annotator):
                 "ComparisonStrategy %s had a string as columns, must be a list"
                 % self.comparison_strategy
             )
-        self.groups_to_samples = self._check_input_dict(groups_to_samples)
-        self._check_comparison_groups(a, b)
-        self.comp = (a, b)
+        self.comp = (group_a, group_b)
         self.columns = []
         self.column_lookup = {}
         for col in sorted(self.comparison_strategy.columns):
@@ -53,6 +41,9 @@ class Comparison(Annotator):
             self.columns.append(cn)
             self.column_lookup[col] = cn
         self.laplace_offset = laplace_offset
+        self.result_dir = self.comparisons.result_dir / f"{group_a}_vs_{group_b}"
+        self.result_dir.mkdir(exist_ok=True, parents=True)
+        self._check_comparison_groups(group_a, group_b)
 
     def name_column(self, col):
         return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name})"
@@ -61,7 +52,7 @@ class Comparison(Annotator):
         """look up the full column name from log2FC, p, FDR, etc"""
         return self.column_lookup[itm]
 
-    def filter(self, genes, filter_definition, new_name=None):
+    def filter(self, filter_definition, new_name=None):
         """Turn a filter definition [(column, operator, threshold)...]
         into a filtered genes object.
 
@@ -90,16 +81,25 @@ class Comparison(Annotator):
         for c in self.columns:
             lookup[c] = c
 
-        filter_func, annos = genes.definition_to_function(filter_definition, lookup)
-        res = genes.filter(new_name, filter_func, annotators=annos)
+        # we need the filter func for the plotting
+        filter_func, annos = self.comparisons.ddf.definition_to_function(
+            filter_definition, lookup
+        )
+        res = self.comparisons.ddf.filter(
+            new_name,
+            filter_func,
+            annotators=annos,
+            column_lookup=lookup,
+            result_dir=self.result_dir / new_name,
+        )
         if not qc_disabled():
-            self.register_qc_volcano(genes, res, filter_func)
-            self.register_qc_ma_plot(genes, res, filter_func)
+            self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
+            self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         return res
 
     def calc(self, df):
-        columns_a = self.sample_columns(self.comp[0])
-        columns_b = self.sample_columns(self.comp[1])
+        columns_a = list(self.sample_columns(self.comp[0]))
+        columns_b = list(self.sample_columns(self.comp[1]))
         comp = self.comparison_strategy.compare(
             df, columns_a, columns_b, self.laplace_offset
         )
@@ -111,7 +111,7 @@ class Comparison(Annotator):
     def dep_annos(self):
         """Return other annotators"""
         res = []
-        for k in self.samples_used():
+        for k in self.samples():
             a = parse_a_or_c_to_anno(k)
             if a is not None:
                 res.append(a)
@@ -121,11 +121,11 @@ class Comparison(Annotator):
         from mbf_genomics.util import freeze
 
         sample_info = []
-        for group, samples in self.groups_to_samples.items():
-            for s in samples:
-                sample_info.append(
-                    (group, str(parse_a_or_c_to_anno(s)), parse_a_or_c_to_column(s))
-                )
+        for ac in self.samples():
+            group = self.comparisons.sample_column_to_group[ac[1]]
+            sample_info.append(
+                (group, ac[0].get_cache_name() if ac[0] is not None else "None", ac[1])
+            )
         sample_info.sort()
 
         parameters = freeze(
@@ -138,88 +138,48 @@ class Comparison(Annotator):
                 )
             ]
         )
-        res = [
-            ppg.ParameterInvariant(
-                "mbf_comparison.Comparison_%i" % hash(parameters), ()
-            )
-        ]
+        res = [ppg.ParameterInvariant(self.get_cache_name(), parameters)]
         res.extend(getattr(self.comparison_strategy, "deps", lambda: [])())
         return res
 
-    def samples_used(self):
+    def samples(self):
+        """Return anno, column for samples used"""
         for x in self.comp:
-            for s in self.groups_to_samples[x]:
+            for s in self.comparisons.groups_to_samples[x]:
                 yield s
 
-    def sample_columns(self, coldef):
-        res = []
-        for k in self.groups_to_samples[coldef]:
-            res.append(parse_a_or_c_to_column(k))
-        return res
-
-    def plot_name(self, sample_column):
-        for g, samples in self.groups_to_samples.items():
-            for k in samples:
-                if parse_a_or_c_to_column(k) == sample_column:
-                    return parse_a_or_c_to_plot_name(k)
-
-        raise KeyError(sample_column)  # pragma: no cover
-
-    def _check_input_dict(self, groups_to_samples):
-        if not isinstance(groups_to_samples, dict):
-            raise ValueError("groups_to_samples must be a dict")
-        counter = collections.Counter()
-        for k, v in groups_to_samples.items():
-            if not isinstance(k, str):
-                raise ValueError("keys must be str, was %s %s" % (k, type(k)))
-            v = list(v)
-            for c in v:
-                ok = True
-                if isinstance(c, str):
-                    counter[c] += 1
-                elif isinstance(c, Annotator):
-                    counter[c.get_cache_name()] += 1
-                elif isinstance(c, tuple) and isinstance(c[0], Annotator):
-                    if c[1] in c[0].columns:
-                        counter[c[0].get_cache_name(), c[1]] += 1
-                    elif isinstance(c[1], int) and c[1] < len(c[0].columns):
-                        counter[c[0].get_cache_name(), c[0].columns[c[1]]] += 1
-                    else:
-                        ok = False
-                else:
-                    ok = False
-                if not ok:
-                    raise ValueError(
-                        "groups_to_samples values must be str, annotator, "
-                        "(annotator, columns) or "
-                        "(annotator, column_number_in_annotator)"
-                    )
-            groups_to_samples[k] = v
-
-        return groups_to_samples
+    def sample_columns(self, group):
+        for s in self.comparisons.groups_to_samples[group]:
+            yield s[1]
 
     def _check_comparison_groups(self, a, b):
         for x in [a, b]:
-            if x not in self.groups_to_samples:
+            if x not in self.comparisons.groups_to_samples:
                 raise ValueError(f"Comparison group {x} not found")
             if (
-                len(self.groups_to_samples[x])
+                len(self.comparisons.groups_to_samples[x])
                 < self.comparison_strategy.min_sample_count
             ):
                 raise ValueError(
                     "Too few samples in %s for %s" % (x, self.comparison_strategy)
                 )
 
-    def register_qc_volcano(self, genes, filtered, filter_func):
-        """perform a volcano plot - not a straight annotator.register_qc function,
-        but called by .filter
+    def register_qc_volcano(self, genes, filtered=None, filter_func=None):
+        """perform a volcano plot
         """
-        output_filename = filtered.result_dir / "volcano.png"
+        if filtered is None:
+            output_filename = genes.result_dir / "volcano.png"
+        else:
+            output_filename = filtered.result_dir / "volcano.png"
 
         def plot(output_filename):
             (
                 dp(genes.df)
-                .mutate(significant=filter_func(genes.df))
+                .mutate(
+                    significant=filter_func(genes.df)
+                    if filter_func is not None
+                    else "tbd."
+                )
                 .p9()
                 .scale_color_many_categories(name="regulated", shift=3)
                 .scale_y_continuous(
@@ -267,7 +227,8 @@ class Comparison(Annotator):
             from statsmodels.nonparametric.smoothers_lowess import lowess
 
             df = genes.df[
-                self.sample_columns(self.comp[0]) + self.sample_columns(self.comp[1])
+                list(self.sample_columns(self.comp[0]))
+                + list(self.sample_columns(self.comp[1]))
             ]
             df = df.assign(significant=filter_func(genes.df))
             pdf = []
@@ -280,23 +241,26 @@ class Comparison(Annotator):
                 np_b = np.log2(df[b] + self.laplace_offset)
                 A = (np_a + np_b) / 2
                 M = np_a - np_b
-                pdf.append(
-                    pd.DataFrame(
-                        {
-                            "A": A,
-                            "M": M,
-                            "a": self.plot_name(a),
-                            "b": self.plot_name(b),
-                            "significant": df["significant"],
-                        }
-                    )
-                )
+                local_pdf = pd.DataFrame(
+                    {
+                        "A": A,
+                        "M": M,
+                        "a": self.comparisons.get_plot_name(a),
+                        "b": self.comparisons.get_plot_name(b),
+                        "significant": df["significant"],
+                    }
+                ).sort_values("M")
+                chosen = np.zeros(len(local_pdf), bool)
+                chosen[:500] = True
+                chosen[-500:] = True
+                chosen[np.random.randint(0, len(chosen), 1000)] = True
+                pdf.append(local_pdf)
                 fitted = lowess(M, A, is_sorted=False)
                 loes_pdfs.append(
                     pd.DataFrame(
                         {
-                            "a": self.plot_name(a),
-                            "b": self.plot_name(b),
+                            "a": self.comparisons.get_plot_name(a),
+                            "b": self.comparisons.get_plot_name(b),
                             "A": fitted[:, 0],
                             "M": fitted[:, 1],
                         }
@@ -319,7 +283,7 @@ class Comparison(Annotator):
                 .add_point("A", "M", color="significant", _size=1, _alpha=0.3)
                 .add_line("A", "M", _color="blue", data=loes_pdf)
                 .facet_wrap(["ab"])
-                .title(f"MA {filtered.name}\n{a}")
+                .title(f"MA {filtered.name}\n{self.comparisons.find_variable_name()}")
                 .render(output_filename, width=8, height=6)
             )
 

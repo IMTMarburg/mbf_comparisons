@@ -6,7 +6,7 @@ import pandas as pd
 from mbf_genomics import DelayedDataFrame
 from mbf_genomics.annotator import Constant
 from mbf_comparisons import (
-    Comparison,
+    Comparisons,
     Log2FC,
     TTest,
     TTestPaired,
@@ -31,7 +31,9 @@ dp, X = dppd()
 class TestComparisons:
     def test_simple(self):
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
-        a = Comparison(Log2FC(), {"a": ["a"], "b": ["b"]}, "a", "b", laplace_offset=0)
+        c = Comparisons(d, {"a": ["a"], "b": ["b"]})
+        a = c.a_vs_b("a", "b", Log2FC, laplace_offset=0)
+        assert d.has_annotator(a)
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
         assert (d.df[a["log2FC"]] == [-1.0, -2.0, -4.0]).all()
@@ -40,7 +42,8 @@ class TestComparisons:
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
         a = Constant("five", 5)
         b = Constant("ten", 10)
-        a = Comparison(Log2FC(), {"a": [a], "b": [b]}, "a", "b", laplace_offset=0)
+        c = Comparisons(d, {"a": [a], "b": [b]})
+        a = c.a_vs_b("a", "b", Log2FC(), laplace_offset=0)
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
         assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
@@ -49,13 +52,8 @@ class TestComparisons:
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
         a = Constant("five", 5)
         b = Constant("ten", 10)
-        a = Comparison(
-            Log2FC(),
-            {"a": [(a, "five")], "b": [(b, "ten")]},
-            "a",
-            "b",
-            laplace_offset=0,
-        )
+        c = Comparisons(d, {"a": [(a, "five")], "b": [(b, "ten")]})
+        a = c.a_vs_b("a", "b", Log2FC(), laplace_offset=0)
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
         assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
@@ -64,28 +62,18 @@ class TestComparisons:
         d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
         a = Constant("five", 5)
         b = Constant("ten", 10)
-        a = Comparison(
-            Log2FC(), {"a": [(a, 0)], "b": [(b, 0)]}, "a", "b", laplace_offset=0
-        )
+        c = Comparisons(d, {"a": [(a, 0)], "b": [(b, 0)]})
+        a = c.a_vs_b("a", "b", Log2FC(), laplace_offset=0)
         force_load(d.add_annotator(a), "fl1")
         run_pipegraph()
         assert (d.df[a["log2FC"]] == [-1, -1, -1]).all()
 
     def test_input_checking(self):
+        d = DelayedDataFrame("ex1", pd.DataFrame({"a": [1, 2, 3], "b": [2, 8, 16 * 3]}))
         with pytest.raises(ValueError):
-            Comparison(Log2FC, [], "a", "b")
+            Comparisons(None, {})
         with pytest.raises(ValueError):
-            Comparison(Log2FC, {55: ["a"], "b": ["b"]}, 55, "b")
-        with pytest.raises(ValueError):
-            Comparison(Log2FC, {"a": ["a"], "b": ["b"]}, "x", "b")
-        with pytest.raises(ValueError):
-            Comparison(Log2FC, {"a": ["a"], "b": ["b"]}, "a", "x")
-        with pytest.raises(ValueError):
-            Comparison(Log2FC, {"a": [3], "b": ["b"]}, "a", "b")
-        with pytest.raises(ValueError):
-            Comparison(Log2FC, {"a": [(Constant("x", "5"), "y")], "b": ["b"]}, "a", "b")
-        with pytest.raises(ValueError):
-            Comparison(Log2FC, {"a": [Constant("x", "5"), 1], "b": ["b"]}, "a", "b")
+            Comparisons(d, {55: {"a"}, "b": ["b"]})
 
     def test_multi_plus_filter(self, clear_annotators):
         d = DelayedDataFrame(
@@ -100,9 +88,8 @@ class TestComparisons:
                 }
             ),
         )
-        a = Comparison(
-            Log2FC(), {"a": ["a1", "a2"], "b": ["b1", "b2"]}, "a", "b", laplace_offset=0
-        )
+        c = Comparisons(d, {"a": ["a1", "a2"], "b": ["b1", "b2"]})
+        a = c.a_vs_b("a", "b", Log2FC(), laplace_offset=0)
         anno1 = Constant("shu1", 5)
         anno2 = Constant("shu2", 5)  # noqa: F841
         anno3 = Constant("shu3", 5)  # noqa: F841
@@ -130,10 +117,10 @@ class TestComparisons:
         for ii, (f, r) in enumerate(to_test):
             if r in (ValueError, KeyError):
                 with pytest.raises(r):
-                    a.filter(d, [f], "new%i" % ii)
+                    a.filter([f], "new%i" % ii)
             else:
                 filtered[tuple(f)] = a.filter(
-                    d, [f] if isinstance(f, tuple) else f, "new%i" % ii
+                    [f] if isinstance(f, tuple) else f, "new%i" % ii
                 )
                 assert filtered[tuple(f)].name == "new%i" % ii
                 force_load(filtered[tuple(f)].annotate(), filtered[tuple(f)].name)
@@ -170,8 +157,9 @@ class TestComparisons:
             for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
         }
 
-        a = Comparison(TTest, gts, "A", "B")
-        b = a.filter(ddf, [("log2FC", ">", 2.38), ("p", "<", 0.05)])
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("A", "B", TTest)
+        b = a.filter([("log2FC", ">", 2.38), ("p", "<", 0.05)])
         assert b.name == "Filtered_A-B_log2FC_>_2.38__p_<_0.05"
         force_load(ddf.add_annotator(a))
         run_pipegraph()
@@ -186,16 +174,18 @@ class TestComparisons:
         )
 
     def test_ttest_min_sample_count(self):
-        data = pd.DataFrame(
+        df = pd.DataFrame(
             {"A.R1": [0, 0, 0, 0], "A.R2": [0, 0, 0, 0], "B.R1": [0.95, 0, 0.56, 0]}
         )
+        ddf = DelayedDataFrame("x", df)
         gts = {
             k: list(v)
-            for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
+            for (k, v) in itertools.groupby(sorted(df.columns), lambda x: x[0])
         }
 
+        c = Comparisons(ddf, gts)
         with pytest.raises(ValueError):
-            Comparison(TTest, gts, "A", "B")
+            c.a_vs_b("A", "B", TTest())
 
     def test_ttest_paired(self):
         data = pd.DataFrame(
@@ -217,7 +207,8 @@ class TestComparisons:
             for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
         }
 
-        a = Comparison(TTestPaired(), gts, "A", "B")
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("A", "B", TTestPaired())
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         assert ddf.df[a["p"]].iloc[0] == pytest.approx(8.096338300746213e-07, abs=1e-4)
@@ -248,9 +239,10 @@ class TestComparisons:
             for (k, v) in itertools.groupby(sorted(data.columns), lambda x: x[0])
         }
 
-        a = Comparison(TTestPaired(), gts, "A", "B")
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("A", "B", TTestPaired())
         force_load(ddf.add_annotator(a))
-        b = Comparison(TTest(), gts, "A", "B")
+        b = c.a_vs_b("A", "B", TTest())
         force_load(ddf.add_annotator(b))
         run_pipegraph()
         assert ddf.df[a["p"]].iloc[0] == pytest.approx(8.096338300746213e-07, abs=1e-4)
@@ -324,7 +316,8 @@ class TestComparisons:
             "N": [x for x in df.columns if ".N" in x],
         }
 
-        a = Comparison(EdgeRUnpaired(), gts, "T", "N")
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("T", "N", EdgeRUnpaired())
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         # these are from the last run - the manual has no simple a vs b comparison...
@@ -339,7 +332,9 @@ class TestComparisons:
             [5.066397e-15]
         )
         df = ddf.df.set_index("nameOfGene")
-        assert df.loc["PTHLH"][gts["T"]].sum() > df.loc["PTHLH"][gts["N"]].sum()
+        t_columns = [x[1] for x in gts["T"]]
+        n_columns = [x[1] for x in gts["N"]]
+        assert df.loc["PTHLH"][t_columns].sum() > df.loc["PTHLH"][n_columns].sum()
 
         assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["log2FC"]].values == approx(
             [-5.127508]
@@ -350,12 +345,13 @@ class TestComparisons:
         assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["p"]].values == approx(
             [3.690970e-13]
         )
-        assert df.loc["PTGFR"][gts["T"]].sum() < df.loc["PTGFR"][gts["N"]].sum()
+        assert df.loc["PTGFR"][t_columns].sum() < df.loc["PTGFR"][n_columns].sum()
 
     def test_edgeR_filter_on_max_count(self):
         ddf, a, b = get_pasilla_data_subset()
         gts = {"T": a, "N": b}
-        a = Comparison(EdgeRUnpaired(ignore_if_max_count_less_than=100), gts, "T", "N")
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("T", "N", EdgeRUnpaired(ignore_if_max_count_less_than=100))
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         assert pd.isnull(ddf.df[a["log2FC"]]).any()
@@ -379,7 +375,8 @@ class TestComparisons:
             "untreated": [x for x in pasilla_data.columns if x.startswith("untreated")],
         }
         ddf = DelayedDataFrame("ex", pasilla_data)
-        a = Comparison(DESeq2Unpaired(), gts, "treated", "untreated")
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("treated", "untreated", DESeq2Unpaired())
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         check = """# This is deseq2 version specific data- probably needs fixing if upgrading deseq2
@@ -406,6 +403,78 @@ class TestComparisons:
 
 @pytest.mark.usefixtures("new_pipegraph")
 class TestQC:
+    def test_distribution(self):
+        ppg.util.global_pipegraph.quiet = False
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        treated = [x for x in pasilla_data.columns if x.startswith("treated")]
+        untreated = [x for x in pasilla_data.columns if x.startswith("untreated")]
+        pasilla_data = DelayedDataFrame("pasilla", pasilla_data)
+        Comparisons(pasilla_data, {"treated": treated, "untreated": untreated})
+        prune_qc(lambda job: "distribution" in job.job_id)
+        run_pipegraph()
+        qc_jobs = list(get_qc_jobs())
+        qc_jobs = [x for x in qc_jobs if not x._pruned]
+        print(qc_jobs)
+        assert len(qc_jobs) == 1
+        assert_image_equal(qc_jobs[0].filenames[0])
+
+    def test_pca(self):
+        ppg.util.global_pipegraph.quiet = False
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        treated = [x for x in pasilla_data.columns if x.startswith("treated")]
+        untreated = [x for x in pasilla_data.columns if x.startswith("untreated")]
+        pasilla_data = DelayedDataFrame("pasilla", pasilla_data)
+        Comparisons(pasilla_data, {"treated": treated, "untreated": untreated})
+        prune_qc(lambda job: "pca" in job.job_id)
+        run_pipegraph()
+        qc_jobs = list(get_qc_jobs())
+        qc_jobs = [x for x in qc_jobs if not x._pruned]
+        print(qc_jobs)
+        assert len(qc_jobs) == 1
+        assert_image_equal(qc_jobs[0].filenames[0])
+
+    def test_correlation(self):
+        ppg.util.global_pipegraph.quiet = False
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        treated = [x for x in pasilla_data.columns if x.startswith("treated")]
+        untreated = [x for x in pasilla_data.columns if x.startswith("untreated")]
+        pasilla_data = DelayedDataFrame("pasilla", pasilla_data)
+        Comparisons(pasilla_data, {"treated": treated, "untreated": untreated})
+        prune_qc(lambda job: "correlation" in job.job_id)
+        run_pipegraph()
+        qc_jobs = list(get_qc_jobs())
+        qc_jobs = [x for x in qc_jobs if not x._pruned]
+        print(qc_jobs)
+        assert len(qc_jobs) == 1
+        assert_image_equal(qc_jobs[0].filenames[0])
+
     def test_volcano_plot(self):
         ppg.util.global_pipegraph.quiet = False
         import mbf_sampledata
@@ -420,39 +489,35 @@ class TestQC:
         pasilla_data.columns = [str(x) for x in pasilla_data.columns]
         treated = [x for x in pasilla_data.columns if x.startswith("treated")]
         untreated = [x for x in pasilla_data.columns if x.startswith("untreated")]
-        comp = Comparison(
-            TTest(),
-            {"treated": treated, "untreated": untreated},
-            "treated",
-            "untreated",
-        )
         pasilla_data = DelayedDataFrame("pasilla", pasilla_data)
-        comp.filter(pasilla_data, [("log2FC", "|>=", 2.0), ("FDR", "<=", 0.05)])
+        comp = Comparisons(
+            pasilla_data, {"treated": treated, "untreated": untreated}
+        ).a_vs_b("treated", "untreated", TTest())
+        comp.filter([("log2FC", "|>=", 2.0), ("FDR", "<=", 0.05)])
         prune_qc(lambda job: "volcano" in job.job_id)
         run_pipegraph()
         qc_jobs = list(get_qc_jobs())
         qc_jobs = [x for x in qc_jobs if not x._pruned]
+        print(qc_jobs)
         assert len(qc_jobs) == 1
         assert_image_equal(qc_jobs[0].filenames[0])
 
     def test_ma_plot(self):
         ppg.util.global_pipegraph.quiet = False
         pasilla_data, treated, untreated = get_pasilla_data_subset()
+        import numpy
 
-        comp = Comparison(
-            TTest(),
-            {"treated": treated, "untreated": untreated},
-            "treated",
-            "untreated",
-            laplace_offset=1,
-        )
+        numpy.random.seed(500)
+
+        comp = Comparisons(
+            pasilla_data, {"treated": treated, "untreated": untreated}
+        ).a_vs_b("treated", "untreated", TTest(), laplace_offset=1)
 
         comp.filter(
-            pasilla_data,
             [
                 ("log2FC", "|>=", 2.0),
                 # ('FDR', '<=', 0.05),
-            ],
+            ]
         )
         prune_qc(lambda job: "ma_plot" in job.job_id)
         run_pipegraph()
