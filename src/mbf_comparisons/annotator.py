@@ -95,6 +95,7 @@ class ComparisonAnnotator(Annotator):
         if not qc_disabled():
             self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
             self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
+        res.plot_columns = self.samples()
         return res
 
     def calc(self, df):
