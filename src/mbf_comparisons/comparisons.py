@@ -57,12 +57,12 @@ class Comparisons:
         res = ComparisonAnnotator(self, a, b, method, laplace_offset)
         self.ddf += res
         return res
-     
-    def all_vs_b(self, b, method, laplace_offset = 1/1e6):
+
+    def all_vs_b(self, b, method, laplace_offset=1 / 1e6):
         res = {}
         for a in self.groups_to_samples:
             if a != b:
-                res[a] = self.a_vs_b(a,b, method, laplace_offset)
+                res[a] = self.a_vs_b(a, b, method, laplace_offset)
         return res
 
     def _check_input_dict(self, groups_to_samples):
