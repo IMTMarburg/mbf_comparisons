@@ -93,9 +93,11 @@ class ComparisonAnnotator(Annotator):
             result_dir=self.result_dir / new_name,
         )
         if not qc_disabled():
-            self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
+            if 'p' in self.comparison_strategy.columns:
+                self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
             self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         res.plot_columns = self.samples()
+        res.venn_annotator = self
         return res
 
     def calc(self, df):

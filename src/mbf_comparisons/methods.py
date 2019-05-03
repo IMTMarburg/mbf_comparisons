@@ -9,14 +9,16 @@ class Log2FC:
     min_sample_count = 0
 
     def __init__(self):
-        self.columns = ["log2FC"]
+        self.columns = ["log2FC", 'minExpression']
         self.name = "simple"
 
     def compare(self, df, columns_a, columns_b, laplace_offset):
         a = np.log2(df[columns_a] + laplace_offset)
         b = np.log2(df[columns_b] + laplace_offset)
         logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
-        return pd.DataFrame({"log2FC": logFC})
+        min_expression = df[columns_a + columns_b].min(axis=1)
+        return pd.DataFrame({"log2FC": logFC,
+                             'minExpression': min_expression })
 
 
 class TTest:
