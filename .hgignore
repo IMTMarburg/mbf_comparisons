@@ -9,3 +9,4 @@ src/*.egg-info/
 src/mqpy/tests/generated_images
 .coverage*
 tests/generated_images/
+tests/run/
