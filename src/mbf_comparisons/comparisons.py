@@ -4,7 +4,7 @@ import pypipegraph as ppg
 from mbf_qualitycontrol import register_qc, qc_disabled
 from dppd import dppd
 import dppd_plotnine  # noqa: F401
-from mbf_genomics.util import parse_a_or_c
+from mbf_genomics.util import parse_a_or_c, freeze
 from mbf_genomics import DelayedDataFrame
 from .annotator import ComparisonAnnotator
 
@@ -116,13 +116,21 @@ class Comparisons:
         output_filename = self.result_dir / "distribution.png"
 
         def plot(output_filename):
+            df = self.get_df()
+            sample_count = df.shape[1]
+            sample_names = [self.get_plot_name(x) for x in df.columns]
+            sample_groups = [self.sample_column_to_group[x] for x in df.columns]
+            df.columns = pd.MultiIndex.from_tuples(
+                zip(sample_names, sample_groups), names=("sample", "group")
+            )
+            order = [
+                x[0]
+                for x in sorted(zip(sample_names, sample_groups), key=lambda v: v[1])
+            ]
             return (
-                dp(self.get_df())
-                .melt(var_name="sample", value_name="y")
-                .assign(
-                    var_name=[self.get_plot_name(x) for x in X["sample"]],
-                    group=[self.sample_column_to_group[x] for x in X["sample"]],
-                )
+                dp(df)
+                .melt(value_name="y")
+                .categorize("sample", order)
                 .p9()
                 .theme_bw()
                 .annotation_stripes()
@@ -132,7 +140,7 @@ class Comparisons:
                 .scale_y_continuous(trans="log10", name=self.find_variable_name())
                 .turn_x_axis_labels()
                 .hide_x_axis_title()
-                .render(output_filename)
+                .render(output_filename, height=5, width=1 + 0.25 * sample_count)
             )
 
         return register_qc(
@@ -140,16 +148,21 @@ class Comparisons:
         )
 
     def deps(self):
+        input_columns = []
+        for k in sorted(self.groups_to_samples):
+            for ac in self.groups_to_samples[k]:
+                input_columns.append(ac[1])
         return [
             self.ddf.add_annotator(ac[0]) for ac in self.samples if ac[0] is not None
         ] + [
-            self.ddf.load()
+            self.ddf.load(),
+            ppg.ParameterInvariant(self.name, freeze(input_columns)),
         ]  # you might be working with an anno less ddf afterall
 
     def register_qc_pca(self):
         output_filename = self.result_dir / "pca.png"
 
-        def plot(output_filename):
+        def plot():
             import sklearn.decomposition as decom
 
             pca = decom.PCA(n_components=2, whiten=False)
@@ -177,12 +190,9 @@ class Comparisons:
                     ],
                 }
             )
-            (
-                dp(plot_df)
-                .p9()
-                .theme_bw()
-                .add_scatter("x", "y", color="group")
-                .add_text(
+            p = dp(plot_df).p9().theme_bw().add_scatter("x", "y", color="group")
+            if data.shape[1] < 15:
+                p = p.add_text(
                     "x",
                     "y",
                     "label",
@@ -191,13 +201,17 @@ class Comparisons:
                         "arrowprops": {"arrowstyle": "->", "color": "darkgrey"},
                     },
                 )
-                .scale_color_many_categories()
+            p = (
+                p.scale_color_many_categories()
                 .title(title)
                 .render(output_filename, width=8, height=6)
             )
+            plot_df.to_csv(output_filename.with_suffix(".tsv"), sep="\t")
 
         return register_qc(
-            ppg.FileGeneratingJob(output_filename, plot).depends_on(self.deps())
+            ppg.MultiFileGeneratingJob(
+                [output_filename, output_filename.with_suffix(".tsv")], plot
+            ).depends_on(self.deps())
         )
 
     def register_qc_correlation(self):
@@ -212,19 +226,40 @@ class Comparisons:
             data = data[
                 ~pd.isnull(data).any(axis=1)
             ]  # can' do correlation on NAN values
-            data.columns = [self.get_plot_name(x) for x in data.columns]
-            pdf = pd.melt(data.corr().reset_index(), "index")
+            sample_names = [self.get_plot_name(x) for x in data.columns]
+            sample_groups = [self.sample_column_to_group[x] for x in data.columns]
+            data.columns = sample_names
+
+            order_pdf = pd.DataFrame(
+                {"sample": sample_names, "group": sample_groups}
+            ).sort_values(["group", "sample"])
+            ordered_names = ["group"] + list(order_pdf["sample"])
+            sample_count = data.shape[1]
+            pdf = (
+                data.corr().transpose().assign(group=0).transpose()
+            )  # value doesn't matter, this just reserves space on the plot
+            pdf = pd.melt(pdf.reset_index(), "index")
             (
                 dp(pdf)
+                .categorize("index", ordered_names)
+                .categorize("variable", ordered_names)
                 .p9()
                 .add_tile("index", "variable", fill="value")
                 .scale_fill_gradient2(
                     "blue", "white", "red", limits=[-1, 1], midpoint=0
                 )
+                .add_scatter(
+                    _x=1, y="sample", color="group", _shape="s", data=order_pdf, _size=3
+                )
+                .scale_color_many_categories()
                 .hide_x_axis_title()
                 .hide_y_axis_title()
                 .turn_x_axis_labels()
-                .render(output_filename)
+                .render(
+                    output_filename,
+                    width=1 + 0.15 * sample_count,
+                    height=0.15 * sample_count,
+                )
             )
 
         return register_qc(
