@@ -23,7 +23,7 @@ class Comparisons:
             keyY: one of the keys of groups_to_samples
     """
 
-    def __init__(self, ddf, groups_to_samples):
+    def __init__(self, ddf, groups_to_samples, name=None):
         if not isinstance(ddf, DelayedDataFrame):
             raise ValueError("Ddf must be a DelayedDataFrame")
         self.ddf = ddf
@@ -32,7 +32,10 @@ class Comparisons:
         self.samples = functools.reduce(
             list.__add__, [x[1] for x in sorted(self.groups_to_samples.items())]
         )
-        self.name = "comparison__" + "_".join(sorted(self.groups_to_samples.keys()))
+        if name is None:
+            self.name = "comparison__" + "_".join(sorted(self.groups_to_samples.keys()))
+        else:
+            self.name = 'comparison__' + name
         self.result_dir = self.ddf.result_dir / self.name
         self.result_dir.mkdir(exist_ok=True, parents=True)
         if ppg.inside_ppg():
