@@ -44,6 +44,18 @@ class ComparisonAnnotator(Annotator):
         self.result_dir = self.comparisons.result_dir / f"{group_a}_vs_{group_b}"
         self.result_dir.mkdir(exist_ok=True, parents=True)
         self._check_comparison_groups(group_a, group_b)
+        self.vid = self._build_vid()
+
+    def _build_vid(self):
+        a = set()
+        b = set()
+        for s in self.comparisons.groups_to_samples[self.comp[0]]:
+            if s[0] is not None:
+                a.add(s[0].vid)
+        for s in self.comparisons.groups_to_samples[self.comp[1]]:
+            if s[0] is not None:
+                b.add(s[0].vid)
+        return sorted(a) + ["vs"] + sorted(b)
 
     def name_column(self, col):
         return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name})"
@@ -91,9 +103,10 @@ class ComparisonAnnotator(Annotator):
             annotators=annos,
             column_lookup=lookup,
             result_dir=self.result_dir / new_name,
+            vid=self.vid
         )
         if not qc_disabled():
-            if 'p' in self.comparison_strategy.columns:
+            if "p" in self.comparison_strategy.columns:
                 self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
             self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         res.plot_columns = self.samples()
