@@ -241,7 +241,9 @@ class ComparisonAnnotator(Annotator):
 
         def plot(output_filename):
             from statsmodels.nonparametric.smoothers_lowess import lowess
-
+            print(genes.df.columns)
+            print(list(self.sample_columns(self.comp[0])))
+            print(list(self.sample_columns(self.comp[1])))
             df = genes.df[
                 list(self.sample_columns(self.comp[0]))
                 + list(self.sample_columns(self.comp[1]))
@@ -306,5 +308,5 @@ class ComparisonAnnotator(Annotator):
         return register_qc(
             ppg.FileGeneratingJob(output_filename, plot).depends_on(
                 genes.add_annotator(self)
-            )
+            ).depends_on(self.comparisons.deps)
         )
