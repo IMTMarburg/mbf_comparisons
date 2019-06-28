@@ -86,7 +86,7 @@ class Comparisons:
                 c = ac[1]
                 if c in result:
                     raise ValueError(
-                        f"Sample in multiple groups - not supported {ac}, {group}, {result[ac]}"
+                        f"Sample in multiple groups - not supported {ac}, {group}, {result[c]}"
                     )
                 result[c] = group
         return result
