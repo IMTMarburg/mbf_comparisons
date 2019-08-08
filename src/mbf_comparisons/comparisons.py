@@ -140,7 +140,7 @@ class Comparisons:
                 .scale_y_continuous(trans="log10", name=self.find_variable_name())
                 .turn_x_axis_labels()
                 .hide_x_axis_title()
-                .render(output_filename, height=5, width=1 + 0.25 * sample_count)
+                .render(output_filename, height=5, width=1 + 0.25 * sample_count, limitsize=False)
             )
 
         return register_qc(
