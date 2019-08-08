@@ -14,7 +14,7 @@ class TestVenn:
             "ex1",
             pd.DataFrame(
                 {
-                    "stable_id": ["A", "B", "C", "D", "E"],
+                    "gene_stable_id": ["A", "B", "C", "D", "E"],
                     "a": [1, 1, 1, 1, 1],
                     "b": [1, 2, 3, 4, 5],
                     "c": [1, 1, 3, 0.5, 0.75],

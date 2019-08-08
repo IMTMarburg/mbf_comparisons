@@ -44,18 +44,27 @@ class ComparisonAnnotator(Annotator):
         self.result_dir = self.comparisons.result_dir / f"{group_a}_vs_{group_b}"
         self.result_dir.mkdir(exist_ok=True, parents=True)
         self._check_comparison_groups(group_a, group_b)
-        self.vid = self._build_vid()
+        try:
+            self.vid = self._build_vid()
+        except AttributeError:  # the sample annotators don't have a vid
+            pass
 
     def _build_vid(self):
         a = set()
         b = set()
+        all_columns = True
         for s in self.comparisons.groups_to_samples[self.comp[0]]:
             if s[0] is not None:
                 a.add(s[0].vid)
+                all_columns = False
         for s in self.comparisons.groups_to_samples[self.comp[1]]:
             if s[0] is not None:
                 b.add(s[0].vid)
-        return sorted(a) + ["vs"] + sorted(b)
+                all_columns = False
+        if a or b:
+            return sorted(a) + ["vs"] + sorted(b)
+        elif all_columns:
+            raise AttributeError("No vids - as expected")
 
     def name_column(self, col):
         return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name})"
@@ -97,13 +106,16 @@ class ComparisonAnnotator(Annotator):
         filter_func, annos = self.comparisons.ddf.definition_to_function(
             filter_definition, lookup
         )
+        kwargs = {}
+        if hasattr(self, "vid"):
+            kwargs["vid"] = self.vid
         res = self.comparisons.ddf.filter(
             new_name,
             filter_func,
             annotators=annos,
             column_lookup=lookup,
             result_dir=self.result_dir / new_name,
-            vid=self.vid
+            **kwargs,
         )
         if not qc_disabled():
             if "p" in self.comparison_strategy.columns:
@@ -241,6 +253,7 @@ class ComparisonAnnotator(Annotator):
 
         def plot(output_filename):
             from statsmodels.nonparametric.smoothers_lowess import lowess
+
             print(genes.df.columns)
             print(list(self.sample_columns(self.comp[0])))
             print(list(self.sample_columns(self.comp[1])))
@@ -306,7 +319,7 @@ class ComparisonAnnotator(Annotator):
             )
 
         return register_qc(
-            ppg.FileGeneratingJob(output_filename, plot).depends_on(
-                genes.add_annotator(self)
-            ).depends_on(self.comparisons.deps)
+            ppg.FileGeneratingJob(output_filename, plot)
+            .depends_on(genes.add_annotator(self))
+            .depends_on(self.comparisons.deps)
         )
