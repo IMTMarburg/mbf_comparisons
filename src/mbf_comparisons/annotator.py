@@ -120,7 +120,7 @@ class ComparisonAnnotator(Annotator):
         if not qc_disabled():
             if "p" in self.comparison_strategy.columns:
                 self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
-            #self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
+            # self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         res.plot_columns = self.samples()
         res.venn_annotator = self
         return res
@@ -189,7 +189,7 @@ class ComparisonAnnotator(Annotator):
                 < self.comparison_strategy.min_sample_count
             ):
                 raise ValueError(
-                    "Too few samples in %s for %s" % (x, self.comparison_strategy)
+                    "Too few samples in %s for %s" % (x, self.comparison_strategy.name)
                 )
 
     def register_qc_volcano(self, genes, filtered=None, filter_func=None):
@@ -201,16 +201,19 @@ class ComparisonAnnotator(Annotator):
             output_filename = filtered.result_dir / "volcano.png"
 
         def plot(output_filename):
-            df = (dp(genes.df)
+            df = (
+                dp(genes.df)
                 .mutate(
                     significant=filter_func(genes.df)
                     if filter_func is not None
                     else "tbd."
-                ).pd)
+                )
+                .pd
+            )
 
-            no_sig_lower = (df['significant'] & (df[self['log2FC']] < 0)).sum()
-            no_sig_higher = (df['significant'] & (df[self['log2FC']] > 0)).sum()
-                
+            no_sig_lower = (df["significant"] & (df[self["log2FC"]] < 0)).sum()
+            no_sig_higher = (df["significant"] & (df[self["log2FC"]] > 0)).sum()
+
             (
                 dp(df)
                 .p9()
@@ -248,8 +251,9 @@ class ComparisonAnnotator(Annotator):
         return register_qc(
             ppg.FileGeneratingJob(output_filename, plot).depends_on(
                 genes.add_annotator(self),
-                ppg.FunctionInvariant(str(output_filename) + '_filter_func', 
-                                      filter_func)
+                ppg.FunctionInvariant(
+                    str(output_filename) + "_filter_func", filter_func
+                ),
             )
         )
 

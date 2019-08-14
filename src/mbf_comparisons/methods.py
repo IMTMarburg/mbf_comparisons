@@ -60,7 +60,7 @@ class TTestPaired:
 class EdgeRUnpaired:
 
     min_sample_count = 3
-    name = "edgeRunpaired"
+    name = "edgeRUnpaired"
     columns = ["log2FC", "p", "FDR"]
 
     def __init__(self, ignore_if_max_count_less_than=None, manual_dispersion_value=0.4):
@@ -95,7 +95,9 @@ class EdgeRUnpaired:
             samples = pd.DataFrame({"lib.size": library_sizes})
         else:
             samples = pd.DataFrame({"lib.size": input_df.sum(axis=0)})
-        samples.insert(0, "group", ["b"] * len(columns_b) + ["a"] * len(columns_a))
+        # this looks like it inverts the columns,
+        # but it doesnt'
+        samples.insert(0, "group", ["z"] * len(columns_b) + ["x"] * len(columns_a))
         r_counts = mbf_r.convert_dataframe_to_r(input_df)
         r_samples = mbf_r.convert_dataframe_to_r(samples)
         y = ro.r("DGEList")(
@@ -166,6 +168,66 @@ class EdgeRUnpaired:
                 result["p"].append(np.nan)
                 result["log2FC"].append(np.nan)
         return pd.DataFrame(result)
+
+
+class EdgeRPaired(EdgeRUnpaired):
+
+    min_sample_count = 3
+    name = "edgeRPaired"
+    columns = ["log2FC", "p", "FDR"]
+
+    def __init__(self, ignore_if_max_count_less_than=None, manual_dispersion_value=0.4):
+        self.ignore_if_max_count_less_than = ignore_if_max_count_less_than
+        self.manual_dispersion_value = manual_dispersion_value
+
+    def edgeR_comparison(
+        self, df, columns_a, columns_b, library_sizes=None, manual_dispersion_value=0.4
+    ):
+        """Call edgeR exactTest comparing two groups.
+        Resulting dataframe is in df order.
+        """
+        import mbf_r
+        import rpy2.robjects as ro
+        import rpy2.robjects.numpy2ri as numpy2ri
+
+        if len(columns_a) != len(columns_b):
+            raise ValueError("paired requires equal length groups")
+
+        ro.r("library(edgeR)")
+        input_df = df[columns_a + columns_b]
+        input_df.columns = ["X_%i" % x for x in range(len(input_df.columns))]
+        if library_sizes is not None:  # pragma: no cover
+            samples = pd.DataFrame({"lib.size": library_sizes})
+        else:
+            samples = pd.DataFrame({"lib.size": input_df.sum(axis=0)})
+        # remember, edgeR does b-a not a-b...
+        samples.insert(0, "group", ["z"] * len(columns_b) + ["y"] * len(columns_a))
+        samples.insert(
+            1,
+            "pairs",
+            [str(x) for x in list(range(len(columns_a))) + list(range(len(columns_a)))],
+        )
+
+        r_counts = mbf_r.convert_dataframe_to_r(input_df)
+        r_samples = mbf_r.convert_dataframe_to_r(samples)
+        design = ro.r("model.matrix")(ro.r("~pairs+group"), data=r_samples)
+        y = ro.r("DGEList")(
+            counts=r_counts,
+            samples=r_samples,
+            **{
+                "lib.size": ro.r("as.vector")(
+                    numpy2ri.py2rpy(np.array(samples["lib.size"]))
+                )
+            },
+        )
+        # apply TMM normalization
+        y = ro.r("calcNormFactors")(y)
+        z = ro.r("estimateDisp")(y, design, robust=True)
+        fit = ro.r("glmFit")(z, design)
+        lrt = ro.r("glmLRT")(fit)
+        res = ro.r("topTags")(lrt, n=len(input_df), **{"sort.by": "none"})
+        result = mbf_r.convert_dataframe_from_r(res[0])
+        return result
 
 
 class DESeq2Unpaired:

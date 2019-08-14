@@ -11,6 +11,7 @@ from mbf_comparisons import (
     TTest,
     TTestPaired,
     EdgeRUnpaired,
+    EdgeRPaired,
     DESeq2Unpaired,
 )
 from mbf_qualitycontrol import prune_qc, get_qc_jobs
@@ -261,7 +262,7 @@ class TestComparisons:
             [3.238535e-06, 5.635329e-01, 8.315462e-02, 7.031581e-01], abs=1e-4
         )
 
-    def test_edgeR(self):
+    def _get_tuch_data(self):
         import mbf_sampledata
         import mbf_r
         import rpy2.robjects as ro
@@ -309,6 +310,10 @@ class TestComparisons:
             "51.T",
         ]
         assert len(df) == 10519
+        return df
+
+    def test_edgeR(self):
+        df = self._get_tuch_data()
 
         ddf = DelayedDataFrame("ex1", df)
         gts = {
@@ -345,6 +350,42 @@ class TestComparisons:
         assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["p"]].values == approx(
             [3.690970e-13]
         )
+        assert df.loc["PTGFR"][t_columns].sum() < df.loc["PTGFR"][n_columns].sum()
+
+    def test_edgeR_paired(self):
+        df = self._get_tuch_data()
+
+        ddf = DelayedDataFrame("ex1", df)
+        gts = {
+            "T": [x for x in sorted(df.columns) if ".T" in x],
+            "N": [x for x in sorted(df.columns) if ".N" in x],
+        }
+
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("T", "N", EdgeRPaired())
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        # these are from the last run - the manual has no simple a vs b comparison...
+        # at least we'l notice if this changes
+        assert ddf.df[ddf.df.nameOfGene == "PTHLH"][a["log2FC"]].values == approx(
+            [3.97], abs=1e-3
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTHLH"][a["FDR"]].values == approx(
+            [4.27e-18]
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTHLH"][a["p"]].values == approx([8.13e-22])
+        df = ddf.df.set_index("nameOfGene")
+        t_columns = [x[1] for x in gts["T"]]
+        n_columns = [x[1] for x in gts["N"]]
+        assert df.loc["PTHLH"][t_columns].sum() > df.loc["PTHLH"][n_columns].sum()
+
+        assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["log2FC"]].values == approx(
+            [-5.18], abs=1e-2
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["FDR"]].values == approx(
+            [3.17e-19]
+        )
+        assert ddf.df[ddf.df.nameOfGene == "PTGFR"][a["p"]].values == approx([3.01e-23])
         assert df.loc["PTGFR"][t_columns].sum() < df.loc["PTGFR"][n_columns].sum()
 
     def test_edgeR_filter_on_max_count(self):
