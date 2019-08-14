@@ -120,7 +120,7 @@ class ComparisonAnnotator(Annotator):
         if not qc_disabled():
             if "p" in self.comparison_strategy.columns:
                 self.register_qc_volcano(self.comparisons.ddf, res, filter_func)
-            self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
+            #self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         res.plot_columns = self.samples()
         res.venn_annotator = self
         return res
@@ -201,13 +201,18 @@ class ComparisonAnnotator(Annotator):
             output_filename = filtered.result_dir / "volcano.png"
 
         def plot(output_filename):
-            (
-                dp(genes.df)
+            df = (dp(genes.df)
                 .mutate(
                     significant=filter_func(genes.df)
                     if filter_func is not None
                     else "tbd."
-                )
+                ).pd)
+
+            no_sig_lower = (df['significant'] & (df[self['log2FC']] < 0)).sum()
+            no_sig_higher = (df['significant'] & (df[self['log2FC']] > 0)).sum()
+                
+            (
+                dp(df)
                 .p9()
                 .scale_color_many_categories(name="regulated", shift=3)
                 .scale_y_continuous(
@@ -235,13 +240,16 @@ class ComparisonAnnotator(Annotator):
                     _alpha=0.8,
                 )
                 .add_scatter(self["log2FC"], self["p"], color="significant")
-                # .coord_trans(x="reverse", y="reverse")  # broken as of 2019-01-31
+                .title(f"# regulated down/ up: {no_sig_lower} / {no_sig_higher}")
+                # .coord_trans(x="reverse", y="reverse")  #broken as of 2019-01-31
                 .render(output_filename, width=8, height=6, dpi=300)
             )
 
         return register_qc(
             ppg.FileGeneratingJob(output_filename, plot).depends_on(
-                genes.add_annotator(self)
+                genes.add_annotator(self),
+                ppg.FunctionInvariant(str(output_filename) + '_filter_func', 
+                                      filter_func)
             )
         )
 
