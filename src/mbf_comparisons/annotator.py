@@ -94,7 +94,27 @@ class ComparisonAnnotator(Annotator):
         if new_name is None:
             filter_str = []
             for column, op, threshold in sorted(filter_definition):
-                filter_str.append(f"{column}_{op}_{threshold:.2f}")
+                if op == "==":
+                    oop = "＝"
+                elif op == ">":
+                    oop = "＞"
+                elif op == "<":
+                    oop = "＜"
+                elif op == ">=":
+                    oop = "≥"
+                elif op == "<=":
+                    oop = "≤"
+                elif op == "|>":
+                    oop = "|＞"
+                elif op == "|<":
+                    oop = "|＜"
+                elif op == "|>=":
+                    oop = "|≥"
+                elif op == "|<=":
+                    oop = "|≤"
+                else:
+                    oop = op
+                filter_str.append(f"{column}_{oop}_{threshold:.2f}")
             filter_str = "__".join(filter_str)
             new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
 

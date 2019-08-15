@@ -161,7 +161,7 @@ class TestComparisons:
         c = Comparisons(ddf, gts)
         a = c.a_vs_b("A", "B", TTest)
         b = a.filter([("log2FC", ">", 2.38), ("p", "<", 0.05)])
-        assert b.name == "Filtered_A-B_log2FC_>_2.38__p_<_0.05"
+        assert b.name == "Filtered_A-B_log2FC_＞_2.38__p_＜_0.05"
         force_load(ddf.add_annotator(a))
         run_pipegraph()
         # value calculated with R to double check.
