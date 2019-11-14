@@ -199,15 +199,16 @@ class Comparisons:
                     "x",
                     "y",
                     "label",
-                    _adjust_text={
-                        "expand_points": (2, 2),
-                        "arrowprops": {"arrowstyle": "->", "color": "darkgrey"},
-                    },
+                    _alpha=0.5,
+                    #_adjust_text={
+                        #"expand_points": (2, 2),
+                        #"arrowprops": {"arrowstyle": "->", "color": "darkgrey"},
+                    #},
                 )
             p = (
                 p.scale_color_many_categories()
                 .title(title)
-                .render(output_filename, width=8, height=6)
+                .render(output_filename, width=8, height=6, dpi=72)
             )
             plot_df.to_csv(output_filename.with_suffix(".tsv"), sep="\t")
 
