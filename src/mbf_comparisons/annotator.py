@@ -1,4 +1,5 @@
 import itertools
+import hashlib
 import pypipegraph as ppg
 import numpy as np
 import pandas as pd
@@ -44,6 +45,8 @@ class ComparisonAnnotator(Annotator):
         self.result_dir = self.comparisons.result_dir / f"{group_a}_vs_{group_b}"
         self.result_dir.mkdir(exist_ok=True, parents=True)
         self._check_comparison_groups(group_a, group_b)
+        if len(self.columns[0]) >= 60:
+            self.cache_name = 'Comp %s' % hashlib.md5(self.columns[0].encode('utf-8')).hexdigest()
         try:
             self.vid = self._build_vid()
         except AttributeError:  # the sample annotators don't have a vid
