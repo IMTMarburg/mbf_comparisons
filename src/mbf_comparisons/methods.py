@@ -7,12 +7,13 @@ import numpy as np
 
 class Log2FC:
     min_sample_count = 0
+    supports_other_samples = False
 
     def __init__(self):
         self.columns = ["log2FC", "minExpression"]
         self.name = "simple"
 
-    def compare(self, df, columns_a, columns_b, laplace_offset):
+    def compare(self, df, columns_a, columns_b, columns_other, laplace_offset):
         a = np.log2(df[columns_a] + laplace_offset)
         b = np.log2(df[columns_b] + laplace_offset)
         logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
@@ -24,13 +25,14 @@ class TTest:
     """Standard students t-test, independent on log2FC + benjamini hochberg"""
 
     min_sample_count = 3
+    supports_other_samples = False
 
     def __init__(self, equal_variance=False):
         self.equal_var = equal_variance
         self.columns = ["log2FC", "p", "FDR"]
         self.name = "ttest"
 
-    def compare(self, df, columns_a, columns_b, laplace_offset):
+    def compare(self, df, columns_a, columns_b, columns_other, laplace_offset):
         a = np.log2(df[columns_a] + laplace_offset)
         b = np.log2(df[columns_b] + laplace_offset)
         logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
@@ -43,12 +45,13 @@ class TTestPaired:
     """Standard students t-test, paired, on log2FC + benjamini hochberg"""
 
     min_sample_count = 3
+    supports_other_samples = False
 
     def __init__(self):
         self.columns = ["log2FC", "p", "FDR"]
         self.name = "ttest_paired"
 
-    def compare(self, df, columns_a, columns_b, laplace_offset):
+    def compare(self, df, columns_a, columns_b, columns_other, laplace_offset):
         a = np.log2(df[columns_a] + laplace_offset)
         b = np.log2(df[columns_b] + laplace_offset)
         logFC = a.mean(axis=1, skipna=True) - b.mean(axis=1, skipna=True)
@@ -62,6 +65,7 @@ class EdgeRUnpaired:
     min_sample_count = 3
     name = "edgeRUnpaired"
     columns = ["log2FC", "p", "FDR"]
+    supports_other_samples = False
 
     def __init__(self, ignore_if_max_count_less_than=None, manual_dispersion_value=0.4):
         self.ignore_if_max_count_less_than = ignore_if_max_count_less_than
@@ -131,7 +135,7 @@ class EdgeRUnpaired:
         result = mbf_r.convert_dataframe_from_r(res[0])
         return result
 
-    def compare(self, df, columns_a, columns_b, _laplace_offset):
+    def compare(self, df, columns_a, columns_b, columns_other, _laplace_offset):
         # laplace offset is ignored, edgeR works on raw data
         value_columns = columns_a + columns_b
         # we need to go by key, since filter out nan rows.
@@ -175,6 +179,7 @@ class EdgeRPaired(EdgeRUnpaired):
     min_sample_count = 3
     name = "edgeRPaired"
     columns = ["log2FC", "p", "FDR"]
+    supports_other_samples = False
 
     def __init__(self, ignore_if_max_count_less_than=None, manual_dispersion_value=0.4):
         self.ignore_if_max_count_less_than = ignore_if_max_count_less_than
@@ -234,6 +239,7 @@ class DESeq2Unpaired:
     min_sample_count = 3
     name = "DESeq2unpaired"
     columns = ["log2FC", "p", "FDR"]
+    supports_other_samples = True
 
     def deps(self):
         import rpy2.robjects as ro
@@ -255,7 +261,7 @@ class DESeq2Unpaired:
         import rpy2.robjects.numpy2ri as numpy2ri
         import mbf_r
 
-        count_data = count_data.as_matrix()
+        count_data = count_data.values
         count_data = np.array(count_data)
         nr, nc = count_data.shape
         count_data = count_data.reshape(count_data.size)  # turn into 1d vector
@@ -272,11 +278,13 @@ class DESeq2Unpaired:
             countData=count_data, colData=col_data, design=robjects.Formula(formula)
         )
         deseq_experiment = robjects.r("DESeq")(deseq_experiment)
-        res = robjects.r("results")(deseq_experiment)
+        res = robjects.r("results")(
+            deseq_experiment, contrast=robjects.r("c")("condition", "c", "base")
+        )
         df = mbf_r.convert_dataframe_from_r(robjects.r("as.data.frame")(res))
         return df
 
-    def compare(self, df, columns_a, columns_b, _laplace_offset):
+    def compare(self, df, columns_a, columns_b, columns_other, _laplace_offset):
         # laplace_offset is ignored
         import rpy2.robjects as robjects
 
@@ -285,8 +293,8 @@ class DESeq2Unpaired:
         conditions = []
         samples = []
         for (name, cols) in [
-            ("c", columns_a),  # this must be the second value...
-            # this must be first in alphabetical sorting
+            ("c", columns_a),
+            ("other", columns_other),
             ("base", columns_b),
         ]:
             for col in cols:

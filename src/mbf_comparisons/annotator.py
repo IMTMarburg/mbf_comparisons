@@ -16,7 +16,13 @@ dp, X = dppd.dppd()
 
 class ComparisonAnnotator(Annotator):
     def __init__(
-        self, comparisons, group_a, group_b, comparison_strategy, laplace_offset=1 / 1e6
+        self,
+        comparisons,
+        group_a,
+        group_b,
+        comparison_strategy,
+        laplace_offset=1 / 1e6,
+        other_groups_for_variance=[],
     ):
         """Create a comparison (a - b)
 
@@ -35,6 +41,7 @@ class ComparisonAnnotator(Annotator):
                 % self.comparison_strategy
             )
         self.comp = (group_a, group_b)
+        self.other_groups_for_variance = other_groups_for_variance
         self.columns = []
         self.column_lookup = {}
         for col in sorted(self.comparison_strategy.columns):
@@ -46,7 +53,9 @@ class ComparisonAnnotator(Annotator):
         self.result_dir.mkdir(exist_ok=True, parents=True)
         self._check_comparison_groups(group_a, group_b)
         if len(self.columns[0]) >= 60:
-            self.cache_name = 'Comp %s' % hashlib.md5(self.columns[0].encode('utf-8')).hexdigest()
+            self.cache_name = (
+                "Comp %s" % hashlib.md5(self.columns[0].encode("utf-8")).hexdigest()
+            )
         try:
             self.vid = self._build_vid()
         except AttributeError:  # the sample annotators don't have a vid
@@ -70,7 +79,11 @@ class ComparisonAnnotator(Annotator):
             raise AttributeError("No vids - as expected")
 
     def name_column(self, col):
-        return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name})"
+        if self.comparison_strategy.supports_other_samples:
+            supports_other_samples = ",Other=%s" % bool(self.other_groups_for_variance)
+        else:
+            supports_other_samples = ""
+        return f"Comp. {self.comp[0]} - {self.comp[1]} {col} ({self.comparison_strategy.name}{supports_other_samples})"
 
     def __getitem__(self, itm):
         """look up the full column name from log2FC, p, FDR, etc"""
@@ -151,8 +164,11 @@ class ComparisonAnnotator(Annotator):
     def calc(self, df):
         columns_a = list(self.sample_columns(self.comp[0]))
         columns_b = list(self.sample_columns(self.comp[1]))
+        columns_other = []
+        for g in self.other_groups_for_variance:
+            columns_other.extend(self.sample_columns(g))
         comp = self.comparison_strategy.compare(
-            df, columns_a, columns_b, self.laplace_offset
+            df, columns_a, columns_b, columns_other, self.laplace_offset
         )
         res = {}
         for col in sorted(self.comparison_strategy.columns):

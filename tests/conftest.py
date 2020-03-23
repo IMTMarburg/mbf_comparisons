@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from pypipegraph.testing.fixtures import (  # noqa:F401
     new_pipegraph,
+    no_pipegraph,
     both_ppg_and_no_ppg,
     pytest_runtest_makereport,
 )

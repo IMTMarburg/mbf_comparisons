@@ -35,7 +35,7 @@ class Comparisons:
         if name is None:
             self.name = "comparison__" + "_".join(sorted(self.groups_to_samples.keys()))
         else:
-            self.name = 'comparison__' + name
+            self.name = "comparison__" + name
         self.result_dir = self.ddf.result_dir / self.name
         self.result_dir.mkdir(exist_ok=True, parents=True)
         if ppg.inside_ppg():
@@ -50,14 +50,28 @@ class Comparisons:
 
         self.register_qc()
 
-    def a_vs_b(self, a, b, method, laplace_offset=1 / 1e6):
+    def a_vs_b(
+        self,
+        a,
+        b,
+        method,
+        laplace_offset=1 / 1e6,
+        include_other_samples_for_variance=True,
+    ):
         if a not in self.groups_to_samples:
             raise KeyError(a)
         if b not in self.groups_to_samples:
             raise KeyError(a)
         if not hasattr(method, "compare"):
             raise TypeError(f"{method} had no method compare")
-        res = ComparisonAnnotator(self, a, b, method, laplace_offset)
+        if include_other_samples_for_variance:
+            other_groups = []
+            for group_name in self.groups_to_samples:
+                if group_name != a and group_name != b:
+                    other_groups.append(group_name)
+        else:
+            other_groups = []
+        res = ComparisonAnnotator(self, a, b, method, laplace_offset, other_groups)
         self.ddf += res
         return res
 
@@ -143,7 +157,12 @@ class Comparisons:
                 .scale_y_continuous(trans="log10", name=self.find_variable_name())
                 .turn_x_axis_labels()
                 .hide_x_axis_title()
-                .render(output_filename, height=5, width=1 + 0.25 * sample_count, limitsize=False)
+                .render(
+                    output_filename,
+                    height=5,
+                    width=1 + 0.25 * sample_count,
+                    limitsize=False,
+                )
             )
 
         return register_qc(
@@ -200,10 +219,10 @@ class Comparisons:
                     "y",
                     "label",
                     _alpha=0.5,
-                    #_adjust_text={
-                        #"expand_points": (2, 2),
-                        #"arrowprops": {"arrowstyle": "->", "color": "darkgrey"},
-                    #},
+                    # _adjust_text={
+                    # "expand_points": (2, 2),
+                    # "arrowprops": {"arrowstyle": "->", "color": "darkgrey"},
+                    # },
                 )
             p = (
                 p.scale_color_many_categories()

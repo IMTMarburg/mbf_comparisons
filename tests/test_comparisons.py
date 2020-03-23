@@ -442,6 +442,69 @@ class TestComparisons:
                 self.assertAlmostEqual(df.ix[row[0]][a["FDR"]], float(row[6]), places=2)
 
 
+@pytest.mark.usefixtures("no_pipegraph")
+class TestComparisonsNoPPG:
+    def test_deseq2_with_and_without_additional_columns(self):
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        print(pasilla_data.columns)
+        pasilla_data = pasilla_data.assign(
+            treated_fake=pasilla_data.treated2fb,
+            untreated_fake=pasilla_data.untreated2fb,
+        )
+
+        gts = {
+            "treated": [
+                x
+                for x in pasilla_data.columns
+                if x.startswith("treated") and "3" not in x
+            ],
+            "untreated": [
+                x
+                for x in pasilla_data.columns
+                if x.startswith("untreated") and "3" not in x
+            ],
+            "other": [x for x in pasilla_data.columns if "3" in x],
+        }
+        assert len(gts["other"]) == 2
+        assert sum((len(x) for x in gts.values())) + 1 == len(
+            pasilla_data.columns
+        )  # GeneId
+        ddf = DelayedDataFrame("ex", pasilla_data)
+        c = Comparisons(ddf, gts)
+        with_other = c.a_vs_b(
+            "treated",
+            "untreated",
+            DESeq2Unpaired(),
+            include_other_samples_for_variance=True,
+        )
+        without_other = c.a_vs_b(
+            "treated",
+            "untreated",
+            DESeq2Unpaired(),
+            include_other_samples_for_variance=False,
+        )
+        force_load(ddf.add_annotator(with_other))
+        force_load(ddf.add_annotator(without_other))
+        # run_pipegraph()
+        df = ddf.df
+        print(df.head())
+        df.to_csv("test.csv")
+        # this is a fairly weak test, but it shows that it at least does *something*
+        assert (df[with_other["p"]] != pytest.approx(df[without_other["p"]])).all()
+        assert (
+            df[with_other["log2FC"]] != pytest.approx(df[without_other["log2FC"]])
+        ).all()
+
+
 @pytest.mark.usefixtures("new_pipegraph")
 class TestQC:
     def test_distribution(self):
@@ -543,6 +606,7 @@ class TestQC:
         assert len(qc_jobs) == 1
         assert_image_equal(qc_jobs[0].filenames[0])
 
+    @pytest.mark.skip  # no ma plots right now, they're way to slow for general usage :(
     def test_ma_plot(self):
         ppg.util.global_pipegraph.quiet = False
         pasilla_data, treated, untreated = get_pasilla_data_subset()
