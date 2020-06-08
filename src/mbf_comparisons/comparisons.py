@@ -61,7 +61,7 @@ class Comparisons:
         if a not in self.groups_to_samples:
             raise KeyError(a)
         if b not in self.groups_to_samples:
-            raise KeyError(a)
+            raise KeyError(b)
         if not hasattr(method, "compare"):
             raise TypeError(f"{method} had no method compare")
         if include_other_samples_for_variance:
