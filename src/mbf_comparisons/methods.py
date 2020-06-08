@@ -301,6 +301,8 @@ class DESeq2Unpaired:
                 columns.append(col)
                 conditions.append(name)
                 samples.append(col)
+        for col in df.columns:
+            print(col)
         count_data = df[columns]
         df = self.call_DESeq2(count_data, samples, conditions)
         df = df.rename(

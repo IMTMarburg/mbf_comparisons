@@ -211,7 +211,7 @@ class ComparisonAnnotator(Annotator):
 
     def samples(self):
         """Return anno, column for samples used"""
-        for x in self.comp:
+        for x in list(self.comp) + self.other_groups_for_variance:
             for s in self.comparisons.groups_to_samples[x]:
                 yield s
 
