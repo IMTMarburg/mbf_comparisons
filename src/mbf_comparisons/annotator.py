@@ -89,7 +89,7 @@ class ComparisonAnnotator(Annotator):
         """look up the full column name from log2FC, p, FDR, etc"""
         return self.column_lookup[itm]
 
-    def filter(self, filter_definition, new_name=None):
+    def filter(self, filter_definition, new_name=None, sheet_name=None):
         """Turn a filter definition [(column, operator, threshold)...]
         into a filtered genes object.
 
@@ -138,7 +138,7 @@ class ComparisonAnnotator(Annotator):
         for c in self.columns:
             lookup[c] = c
 
-        # we need the filter func for the plotting
+        # we need the filter func for the plotting, so we do it ourselves
         filter_func, annos = self.comparisons.ddf.definition_to_function(
             filter_definition, lookup
         )
@@ -151,6 +151,7 @@ class ComparisonAnnotator(Annotator):
             annotators=annos,
             column_lookup=lookup,
             result_dir=self.result_dir / new_name,
+            sheet_name=sheet_name,
             **kwargs,
         )
         if not qc_disabled():
