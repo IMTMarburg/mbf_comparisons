@@ -107,36 +107,63 @@ class ComparisonAnnotator(Annotator):
 
             ]
         """
-        if new_name is None:
-            filter_str = []
-            for column, op, threshold in sorted(filter_definition):
-                if op == "==":
-                    oop = "＝"
-                elif op == ">":
-                    oop = "＞"
-                elif op == "<":
-                    oop = "＜"
-                elif op == ">=":
-                    oop = "≥"
-                elif op == "<=":
-                    oop = "≤"
-                elif op == "|>":
-                    oop = "|＞"
-                elif op == "|<":
-                    oop = "|＜"
-                elif op == "|>=":
-                    oop = "|≥"
-                elif op == "|<=":
-                    oop = "|≤"
-                else:
-                    oop = op
-                filter_str.append(f"{column}_{oop}_{threshold:.2f}")
-            filter_str = "__".join(filter_str)
-            new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
-
         lookup = self.column_lookup.copy()
         for c in self.columns:
             lookup[c] = c
+
+        subset_relevant_columns = set(lookup.values())
+        subset_relevant_columns.update(self.sample_columns(self.comp[0]))
+        subset_relevant_columns.update(self.sample_columns(self.comp[1]))
+        for g in self.other_groups_for_variance:
+            subset_relevant_columns.update(self.sample_columns(g))
+
+        further_filters = []
+        add_direction = False
+        thresholds = {}
+        filter_str = []
+        for column, op, threshold in sorted(filter_definition):
+            if op == "==":
+                oop = "＝"
+            elif op == ">":
+                oop = "＞"
+            elif op == "<":
+                oop = "＜"
+            elif op == ">=":
+                oop = "≥"
+            elif op == "<=":
+                oop = "≤"
+            elif op == "|>":
+                oop = "|＞"
+            elif op == "|<":
+                oop = "|＜"
+            elif op == "|>=":
+                oop = "|≥"
+            elif op == "|<=":
+                oop = "|≤"
+            else:
+                oop = op
+            filter_str.append(f"{column}_{oop}_{threshold:.2f}")
+            subset_relevant_columns.add(lookup[column])
+            if column == "log2FC":
+                if "|" in op:
+                    add_direction = True
+            thresholds[column] = threshold
+
+        if new_name is None:
+            filter_str = "__".join(filter_str)
+            new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
+
+        if "log2FC" in lookup:
+            further_filters.append(("logFC", lookup["log2FC"], 2, thresholds.get('log2FC', 0)))
+            if add_direction:
+                further_filters.append(("Direction", lookup["log2FC"], 1, 0))
+        for x in ["p", "FDR"]:  # less than
+            if x in lookup:
+                further_filters.append((x, lookup[x], 5, thresholds.get(x, 1)))
+
+        for x in ["minExpression"]:  # min of columns > x
+            if x in lookup:
+                further_filters.append((x, [lookup[x]], 4, thresholds.get(x, 0)))
 
         # we need the filter func for the plotting, so we do it ourselves
         filter_func, annos = self.comparisons.ddf.definition_to_function(
@@ -160,6 +187,8 @@ class ComparisonAnnotator(Annotator):
             # self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         res.plot_columns = self.samples()
         res.venn_annotator = self
+        res.subset_relevant_columns = subset_relevant_columns
+        res.further_filter_columns = further_filters
         return res
 
     def calc(self, df):
