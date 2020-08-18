@@ -3,9 +3,13 @@ import hashlib
 import pypipegraph as ppg
 import numpy as np
 import pandas as pd
+from pandas import DataFrame
+from mbf_genomics import DelayedDataFrame
 from mbf_qualitycontrol import register_qc, qc_disabled
 from mbf_genomics.util import parse_a_or_c_to_anno
 from mbf_genomics.annotator import Annotator
+from typing import List, Dict, Tuple, Any
+from pypipegraph import Job
 import dppd
 import dppd_plotnine  # noqa: F401
 
@@ -24,9 +28,7 @@ class ComparisonAnnotator(Annotator):
         laplace_offset=1 / 1e6,
         other_groups_for_variance=[],
     ):
-        """Create a comparison (a - b)
-
-            """
+        """Create a comparison (a - b)"""
         self.comparisons = comparisons
 
         if hasattr(comparison_strategy, "__call__"):
@@ -164,11 +166,11 @@ class ComparisonAnnotator(Annotator):
     def calc(self, df):
         columns_a = list(self.sample_columns(self.comp[0]))
         columns_b = list(self.sample_columns(self.comp[1]))
-        columns_other = []
+        columns_other = {}
         for g in self.other_groups_for_variance:
-            columns_other.extend(self.sample_columns(g))
+            columns_other[g] = self.sample_columns(g)
         comp = self.comparison_strategy.compare(
-            df, columns_a, columns_b, columns_other, self.laplace_offset
+            df, columns_a, columns_b, columns_other, self.laplace_offset,
         )
         res = {}
         for col in sorted(self.comparison_strategy.columns):
@@ -178,10 +180,11 @@ class ComparisonAnnotator(Annotator):
     def dep_annos(self):
         """Return other annotators"""
         res = []
-        for k in self.samples():
-            a = parse_a_or_c_to_anno(k)
-            if a is not None:
-                res.append(a)
+        for generator in [self.samples(), self.other_samples()]:
+            for k in generator:
+                a = parse_a_or_c_to_anno(k)
+                if a is not None:
+                    res.append(a)
         return res
 
     def deps(self, ddf):
@@ -194,7 +197,6 @@ class ComparisonAnnotator(Annotator):
                 (group, ac[0].get_cache_name() if ac[0] is not None else "None", ac[1])
             )
         sample_info.sort()
-
         parameters = freeze(
             [
                 (
@@ -215,12 +217,18 @@ class ComparisonAnnotator(Annotator):
             for s in self.comparisons.groups_to_samples[x]:
                 yield s
 
+    def other_samples(self):
+        """Return anno, column for additional samples used for variance"""
+        for x in self.other_groups_for_variance:
+            for s in self.comparisons.groups_to_samples[x]:
+                yield s
+
     def sample_columns(self, group):
         for s in self.comparisons.groups_to_samples[group]:
             yield s[1]
 
-    def _check_comparison_groups(self, a, b):
-        for x in [a, b]:
+    def _check_comparison_groups(self, *groups):
+        for x in groups:
             if x not in self.comparisons.groups_to_samples:
                 raise ValueError(f"Comparison group {x} not found")
             if (
@@ -374,3 +382,234 @@ class ComparisonAnnotator(Annotator):
             .depends_on(genes.add_annotator(self))
             .depends_on(self.comparisons.deps)
         )
+
+
+class ComparisonAnnotatorMulti(ComparisonAnnotator):
+    """
+    Annotator for multi-factor comparison.
+
+    Based on a main factor and a list of multiple other factor, this
+    creates an annotator that annotates DEG analysis results for a multi-factor
+    design. Interaction terms may be specified as a list of tuples which may be
+    empty.
+    if an empty interactions list is provided, the analysis just controls
+    for different levels of other_factors and report the main effect.
+
+    Parameters
+    ----------
+    name : str
+        Annotator name, used for cache names and test of uniqueness.
+    comparisons : Comparisons
+        Comparisons instance containing the groups to be analyzed.
+    main_factor : str
+        The main factor, e.g. treatment/condition.
+    factor_reference : Dict[str, str]
+        Dictionary of factor names (key) to base level (value), e.g.
+        {"treatment": "DMSO"}.
+    groups : List[str]
+        Groups to be included in the DE analysis.
+    df_factors : DataFrame
+        A dataframe containing all groups and factor levels
+        relevant for the variance calculation. This may include groups
+        beyond the groups of interest. If so, these groups are used for
+        estimating dispersion but not reported in the results.
+    interactions : List[Tuple[str, str]]
+        List if interaction terms. If this is empty, the analysis will
+        report the main factor effects controlling for the other factors.
+    method : Any
+        The DEG method to use, e.g. DESeq2MultiFactor.
+    test_difference : bool, optional
+        Test for differences in the main effects for different levels
+        of other factors, by default True.
+    compare_non_reference : bool, optional
+        Test for difference of the main effects for different levels of other
+        factors compared to non-reference levels, by default False.
+    laplace_offset : float, optional
+        laplace offset for methods that cannot handle zeros, by default 1/1e6.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        comparisons: Any,
+        main_factor: str,
+        factor_reference: Dict[str, str],
+        groups: List[str],
+        df_factors: DataFrame,
+        interactions: List[Tuple[str, str]],
+        comparison_strategy: Any,
+        test_difference: bool,
+        compare_non_reference: bool,
+        laplace_offset: float,
+    ):
+        """Contructor"""
+        self.comparisons = comparisons
+        if hasattr(comparison_strategy, "__call__"):
+            self.comparison_strategy = comparison_strategy()
+        else:
+            self.comparison_strategy = comparison_strategy
+        self.comparison_name = name
+        reserved_chars = ":()"
+        for factor in factor_reference:
+            if any([x in factor for x in reserved_chars]):
+                raise ValueError(f"Factor values must not contain any of {list(reserved_chars)}.")
+            for level in df_factors[factor].unique():
+                if any([x in level for x in reserved_chars]):
+                    raise ValueError(f"Level values must not contain any of {list(reserved_chars)}.")
+        self.columns = []
+        self.column_lookup = {}
+        self.groups = groups
+        prefixes = comparison_strategy.prefixes(
+            main_factor,
+            factor_reference,
+            df_factors,
+            interactions,
+            test_difference,
+            compare_non_reference,
+        )
+        self.prefixes = prefixes
+        for col in comparison_strategy.get_columns(prefixes):
+            cn = self.name_column(col)
+            self.columns.append(cn)
+            self.column_lookup[col] = cn
+        self.laplace_offset = laplace_offset
+        self.result_dir = self.comparisons.result_dir / f"{self.comparison_name}"
+        self.result_dir.mkdir(exist_ok=True, parents=True)
+        self.df_factors = df_factors
+        self.factor_reference = factor_reference
+        self.interactions = interactions
+        self.main_factor = main_factor
+        self.test_difference = test_difference
+        self.compare_non_reference = compare_non_reference
+        columns = ["group"] + list(factor_reference.keys())
+        df_factors = df_factors[columns]
+        self._check_comparison_groups(*self.groups)
+        self.cache_name = f"{ComparisonAnnotatorMulti}_{name}"
+        if len(self.cache_name) >= 60:
+            self.cache_name = (
+                "Comp %s" % hashlib.md5(self.cache_name.encode("utf-8")).hexdigest()
+            )
+        try:
+            self.vid = self._build_vid()
+        except AttributeError:  # the sample annotators don't have a vid
+            pass
+        self.other_groups_for_variance = []
+
+    def samples(self):
+        """
+        Return anno, column for samples used.
+
+        Overrides the parent method, since we now have more than 2 groups to
+        be considered.
+
+        Yields
+        -------
+        Tuple[Annotator, str]
+            (Annotator, column_name) for each sample used.
+        """
+        for group in self.groups:
+            for s in self.comparisons.groups_to_samples[group]:
+                yield s
+
+    def deps(self, ddf: DelayedDataFrame) -> List[Job]:
+        """
+        Returns list of dependencies.
+
+        Parameters
+        ----------
+        ddf : DelayedDataFrame
+            The DelayedDataFrame instance to be annotated, e.g. genes.
+
+        Returns
+        -------
+        List[Job]
+            List of jobs this calc_ddf function depends on.
+        """
+        res = super().deps(ddf)
+        res.append(ddf.load())
+        for anno in self.dep_annos():
+            res.append(ddf.add_annotator(anno))
+        return res
+
+    def calc_ddf(self, ddf: DelayedDataFrame) -> DataFrame:
+        """
+        Calculates a dataframe with new columns to be added to the ddf.
+
+        This overrides the method from the parent class and calls the
+        compare function from the comparison method given.
+
+        Parameters
+        ----------
+        ddf : DelayedDataFrame
+            The ddf to be annotated.
+
+        Returns
+        -------
+        DataFrame
+            DataFrame with additional columns to be added to the ddf.df.
+        """
+        df = ddf.df
+        columns_by_group = {}
+        for group in self.groups:
+            columns_by_group[group] = list(self.sample_columns(group))
+        columns_other = []
+        for g in self.other_groups_for_variance:
+            columns_other.extend(self.sample_columns(g))
+        res = self.comparison_strategy.compare(
+            df,
+            self.main_factor,
+            self.factor_reference,
+            columns_by_group,
+            self.df_factors,
+            self.interactions,
+            self.test_difference,
+            self.compare_non_reference,
+            self.laplace_offset,
+            self.prefixes
+        )
+        rename = {}
+        for col in res.columns:
+            rename[col] = self.name_column(col)
+        res = res.rename(columns=rename)
+        res = res.set_index(df.index)
+        return res
+
+    def name_column(self, col: str) -> str:
+        """
+        Name mangler function that adds the annotator name to the new
+        columns.
+
+        Comparison name is added as a suffix.
+
+        Parameters
+        ----------
+        col : [str]
+            A column name to be changed.
+
+        Returns
+        -------
+        [str]
+            The new column name.
+        """
+        return f"{col} (Comp. {self.comparison_name})"
+
+
+class ComparisonAnnotatorOld(ComparisonAnnotator):
+    """
+    I needed to adjust the calc fuction of ComparisonAnnotator to account for
+    other_groups_fro_variance. This is the old function, I need it to generate the
+    original results.
+    """
+    def calc(self, df):
+        columns_a = list(self.sample_columns(self.comp[0]))
+        columns_b = list(self.sample_columns(self.comp[1]))
+        columns_other = []
+        for g in self.other_groups_for_variance:
+            columns_other.extend(self.sample_columns(g))
+        comp = self.comparison_strategy.compare(
+            df, columns_a, columns_b, columns_other, self.laplace_offset
+        )
+        res = {}
+        for col in sorted(self.comparison_strategy.columns):
+            res[self.name_column(col)] = comp[col]
+        return pd.DataFrame(res)

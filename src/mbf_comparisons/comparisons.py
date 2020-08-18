@@ -1,12 +1,18 @@
+from typing import List, Dict, Any, Tuple
+from mbf_qualitycontrol import register_qc, qc_disabled
+from dppd import dppd
+from mbf_genomics.util import parse_a_or_c, freeze
+from mbf_genomics import DelayedDataFrame
+from pandas import DataFrame
+from .annotator import (
+    ComparisonAnnotator,
+    ComparisonAnnotatorOld,
+    ComparisonAnnotatorMulti,
+)
 import functools
 import pandas as pd
 import pypipegraph as ppg
-from mbf_qualitycontrol import register_qc, qc_disabled
-from dppd import dppd
 import dppd_plotnine  # noqa: F401
-from mbf_genomics.util import parse_a_or_c, freeze
-from mbf_genomics import DelayedDataFrame
-from .annotator import ComparisonAnnotator
 
 dp, X = dppd()
 
@@ -47,10 +53,9 @@ class Comparisons:
                     raise ValueError(
                         f"Comparisons group {name} defined in multiple Comparisons - not supported"
                     )
-
         self.register_qc()
 
-    def a_vs_b(
+    def a_vs_b_old(
         self,
         a,
         b,
@@ -71,8 +76,139 @@ class Comparisons:
                     other_groups.append(group_name)
         else:
             other_groups = []
+        res = ComparisonAnnotatorOld(self, a, b, method, laplace_offset, other_groups)
+        self.ddf += res
+        return res
+
+    def a_vs_b(
+        self,
+        a,
+        b,
+        method,
+        laplace_offset=1 / 1e6,
+        include_other_samples_for_variance=True,
+    ):
+        # this is the right way to do it
+        if a not in self.groups_to_samples:
+            raise KeyError(a)
+        if b not in self.groups_to_samples:
+            raise KeyError(b)
+        if not hasattr(method, "compare"):
+            raise TypeError(f"{method} had no method compare")
+        if include_other_samples_for_variance:
+            other_groups = []
+            for group_name in self.groups_to_samples:
+                if group_name != a and group_name != b:
+                    other_groups.append(group_name)
+        else:
+            other_groups = []
         res = ComparisonAnnotator(self, a, b, method, laplace_offset, other_groups)
         self.ddf += res
+        return res
+
+    def multi(
+        self,
+        name: str,
+        main_factor: str,
+        factor_reference: Dict[str, str],
+        df_factors: DataFrame,
+        interactions: List[Tuple[str, str]],
+        method: Any,
+        test_difference: bool = True,
+        compare_non_reference: bool = False,
+        laplace_offset: float = 1 / 1e6,
+    ) -> ComparisonAnnotatorMulti:
+        """
+        Initializes and returns an annotator for multi-factor analysis.
+
+        Based on a main factor and a list of multiple other factor, this
+        creates an annotator that annotates DEG analysis results for a multi-factor
+        design. Interaction terms may be specified as a list of tuples which may be
+        empty.
+        if an empty interactions list is provided, the analysis just controls
+        for different levels of other_factors and report the main effect.
+
+        Parameters
+        ----------
+        name : str
+            Annotator name, used for cache names and test of uniqueness.
+        main_factor : str
+            The main factor, usually condition or treatment.
+        factor_reference : Dict[str, str]
+            Dictionary of factor names (key) to base level (value), e.g.
+            {"treatment": "DMSO"}.
+        df_factors : DataFrame
+            A dataframe containing all groups and factor levels
+            relevant for the variance calculation. This may include groups
+            beyond the groups of interest. If so, these groups are used for
+            estimating dispersion but not reported in the results.
+        interactions : List[Tuple[str, str]]
+            List if interaction terms. If this is empty, the analysis will
+            report the main factor effects controlling for the other factors.
+        method : Any
+            The DEG method to use, e.g. DESeq2MultiFactor.
+        test_difference : bool, optional
+            Test for differences in the main effects for different levels
+            of other factors, by default True.
+        compare_non_reference : bool, optional
+            Test for difference of the main effects for different levels of other
+            factors compared to non-reference levels, by default False.
+        laplace_offset : float, optional
+            laplace offset for methods that cannot handle zeros, by default 1/1e6.
+
+        Returns
+        -------
+        ComparisonAnnotatorMulti
+            Multi-factor comparison annotator.
+
+        Raises
+        ------
+        ValueError
+            If the df_factors does not contain a group column.
+        ValueError
+            If a factor is not found in df_factors.
+        ValueError
+            If a level is specified in the dictionaryx that is not present in df_factors.
+        ValueError
+            If less than 2 factors are given.
+        KeyError
+            If a specified group in not in the comparisons.
+        TypeError
+            if the given compare method does not have a compare function.
+        """
+        if "group" not in df_factors.columns:
+            raise ValueError(
+                "Column 'group' not in df_factors, please provide a group column containing all groups affecting the counts."
+            )
+        for factor in factor_reference:
+            if factor not in df_factors.columns:
+                raise ValueError(f"Factor {factor} not in df_factors.")
+            # for level in factor_levels_ordered[factor]:
+            #     if level not in df_factors.values:
+            #         raise ValueError(f"Unknown factor level {level} for factor {factor}.")
+        if len(factor_reference) < 2:
+            raise ValueError(
+                f"You need at least 2 factors for a multi-factor design', factors given were {list(factor_reference.keys())}."
+            )
+        groups = list(df_factors["group"].values)
+        for group in groups:
+            if group not in self.groups_to_samples:
+                raise KeyError(group)
+        if not hasattr(method, "compare"):
+            raise TypeError(f"{method} had no method compare")
+        res = ComparisonAnnotatorMulti(
+            name,
+            self,
+            main_factor,
+            factor_reference,
+            groups,
+            df_factors,
+            interactions,
+            method,
+            test_difference,
+            compare_non_reference,
+            laplace_offset,
+        )
         return res
 
     def all_vs_b(self, b, method, laplace_offset=1 / 1e6):
@@ -174,6 +310,7 @@ class Comparisons:
         for k in sorted(self.groups_to_samples):
             for ac in self.groups_to_samples[k]:
                 input_columns.append(ac[1])
+
         return [
             self.ddf.add_annotator(ac[0]) for ac in self.samples if ac[0] is not None
         ] + [

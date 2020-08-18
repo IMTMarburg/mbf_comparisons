@@ -3,6 +3,7 @@ import pypipegraph as ppg
 import itertools
 from pytest import approx
 import pandas as pd
+import numpy
 from mbf_genomics import DelayedDataFrame
 from mbf_genomics.annotator import Constant
 from mbf_comparisons import (
@@ -13,6 +14,8 @@ from mbf_comparisons import (
     EdgeRUnpaired,
     EdgeRPaired,
     DESeq2Unpaired,
+    NOISeq,
+    DESeq2MultiFactor,
 )
 from mbf_qualitycontrol import prune_qc, get_qc_jobs
 from mbf_qualitycontrol.testing import assert_image_equal
@@ -410,6 +413,263 @@ class TestComparisons:
         )
         # pasilla_data = pasilla_data.set_index('Gene')
         pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        gts = {
+            "treated": [x for x in pasilla_data.columns if x.startswith("treated")],
+            "untreated": [x for x in pasilla_data.columns if x.startswith("untreated")],
+        }
+        ddf = DelayedDataFrame("ex", pasilla_data)
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b("treated", "untreated", DESeq2Unpaired())
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        check = """# This is deseq2 version specific data- probably needs fixing if upgrading deseq2
+## baseMean log2FoldChange lfcSE stat pvalue padj
+## <numeric> <numeric> <numeric> <numeric> <numeric> <numeric>
+## FBgn0039155 453 -3.72 0.160 -23.2 1.63e-119 1.35e-115
+## FBgn0029167 2165 -2.08 0.103 -20.3 1.43e-91 5.91e-88
+## FBgn0035085 367 -2.23 0.137 -16.3 6.38e-60 1.75e-56
+## FBgn0029896 258 -2.21 0.159 -13.9 5.40e-44 1.11e-40
+## FBgn0034736 118 -2.56 0.185 -13.9 7.66e-44 1.26e-40
+"""
+        df = ddf.df.sort_values(a["FDR"])
+        df = df.set_index("Gene")
+        for row in check.split("\n"):
+            row = row.strip()
+            if row and not row[0] == "#":
+                row = row.split()
+                self.assertAlmostEqual(
+                    df.ix[row[0]][a["log2FC"]], float(row[2]), places=2
+                )
+                self.assertAlmostEqual(df.ix[row[0]][a["p"]], float(row[5]), places=2)
+                self.assertAlmostEqual(df.ix[row[0]][a["FDR"]], float(row[6]), places=2)
+
+    def _get_pasilla_3(self):
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        pasilla_data = pasilla_data.set_index("Gene")
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
+        seed = 12345
+        numpy.random.seed(seed)
+        for i in range(3):
+            pasilla_data[f"other{i}fb"] = (
+                pasilla_data["untreated4fb"].values
+                + numpy.abs(numpy.random.randn(len(pasilla_data)) * 10)
+            ).astype(int)
+        for i in range(3):
+            pasilla_data[f"otherse{i}fb"] = (
+                pasilla_data["untreated4fb"].values
+                + numpy.abs(numpy.random.randn(len(pasilla_data)) * 15)
+            ).astype(int)
+        return pasilla_data
+
+    def test_deseq2_3groups(self):
+        import mbf_r
+        import rpy2.robjects as robjects
+
+        robjects.r("library(DESeq2)")
+        pasilla_data = self._get_pasilla_3()
+        condition_data = pd.DataFrame(
+            {
+                "condition": [x[:-3] for x in pasilla_data.columns],
+                "type": [
+                    "se"
+                    if x
+                    in ["treated1fb", "untreated1fb", "untreated2fb"]
+                    + [f"otherse{i}fb" for i in range(3)]
+                    else "pe"
+                    for x in pasilla_data.columns
+                ],
+            },
+            index=pasilla_data.columns,
+        )
+        gts = {}
+        for cond, sub in condition_data.groupby("condition"):
+            gts[cond] = list(sub.index.values)
+        cts = mbf_r.convert_dataframe_to_r(pasilla_data)
+        col = mbf_r.convert_dataframe_to_r(condition_data)
+        rresults = robjects.r(
+            """
+            function (cts, col){
+                dds = DESeqDataSetFromMatrix(countData=cts, colData=col, design = ~ condition)
+                dds = DESeq(dds)
+                print(resultsNames(dds))
+                res = results(dds, contrast=c("condition", "treated", "untreated"))
+                res = as.data.frame(res)
+                res
+            }
+        """
+        )(cts=cts, col=col)
+        ddf = DelayedDataFrame("ex", pasilla_data)
+        c = Comparisons(ddf, gts)
+        a = c.a_vs_b(
+            "treated",
+            "untreated",
+            DESeq2Unpaired(),
+            include_other_samples_for_variance=True,
+        )
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        rresults = mbf_r.convert_dataframe_from_r(rresults)
+        numpy.testing.assert_almost_equal(
+            rresults["log2FoldChange"].values,
+            ddf.df[
+                "Comp. treated - untreated log2FC (DESeq2unpaired,Other=True)"
+            ].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults["pvalue"].values,
+            ddf.df["Comp. treated - untreated p (DESeq2unpaired,Other=True)"].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults["padj"].values,
+            ddf.df["Comp. treated - untreated FDR (DESeq2unpaired,Other=True)"].values,
+            decimal=4,
+        )
+
+    def test_deseq2_multi(self):
+        import mbf_r
+        import rpy2.robjects as robjects
+
+        robjects.r("library(DESeq2)")
+        pasilla_data = self._get_pasilla_3()
+        condition_data = pd.DataFrame(
+            {
+                "condition": [
+                    "treated"
+                    if (x.startswith("treated") | x.startswith("otherse"))
+                    else "base.untreated"
+                    for x in pasilla_data.columns
+                ],
+                "type": [
+                    "se" if x.startswith("other") else "pe"
+                    for x in pasilla_data.columns
+                ],
+            },
+            index=pasilla_data.columns,
+        )
+        gts = {}
+        groups = []
+        df_factors = pd.DataFrame(
+            {
+                "group": [
+                    "base.untreated_pe",
+                    "base.untreated_se",
+                    "treated_pe",
+                    "treated_se",
+                ],
+                "condition": ["base.untreated", "base.untreated", "treated", "treated"],
+                "type": ["pe", "se", "pe", "se"],
+            }
+        )
+        for cond1, sub in condition_data.groupby("condition"):
+            for cond2, sub2 in sub.groupby("type"):
+                group = f"{cond1}_{cond2}"
+                groups.extend([group for i in sub2.index])
+                gts[group] = list(sub2.index.values)
+        cts = mbf_r.convert_dataframe_to_r(pasilla_data)
+        col = mbf_r.convert_dataframe_to_r(condition_data)
+        rresults_pe = robjects.r(
+            """
+            function (cts, col){
+                dds = DESeqDataSetFromMatrix(countData=cts, colData=col, design = ~ type + condition + type:condition)
+                dds = DESeq(dds)
+                res = results(dds, contrast=c("condition", "treated", "base.untreated"))
+                res = as.data.frame(res)
+                res
+            }
+        """
+        )(cts=cts, col=col)
+        rresults_se = robjects.r(
+            """
+            function (cts, col){
+                dds = DESeqDataSetFromMatrix(countData=cts, colData=col, design = ~ type + condition + type:condition)
+                dds = DESeq(dds)
+                res = results(dds, list( c("condition_treated_vs_base.untreated", "typese.conditiontreated") ))
+                res = as.data.frame(res)
+                res
+            }
+        """
+        )(cts=cts, col=col)
+        ddf = DelayedDataFrame("ex", pasilla_data)
+        c = Comparisons(ddf, gts)
+        factor_reference = {"condition": "base.untreated", "type": "pe"}
+        condition_data["group"] = groups
+        a = c.multi(
+            name="multi",
+            main_factor="condition",
+            factor_reference=factor_reference,
+            df_factors=df_factors,
+            interactions=[("type", "condition")],
+            method=DESeq2MultiFactor(),
+            test_difference=True,
+            compare_non_reference=False,
+        )
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        rresults_pe = mbf_r.convert_dataframe_from_r(rresults_pe)
+        rresults_se = mbf_r.convert_dataframe_from_r(rresults_se)
+        numpy.testing.assert_almost_equal(
+            rresults_pe["log2FoldChange"].values,
+            ddf.df[
+                "treated:base.untreated(condition) effect for pe(type) log2FC (Comp. multi)"
+            ].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults_pe["padj"].values,
+            ddf.df[
+                "treated:base.untreated(condition) effect for pe(type) FDR (Comp. multi)"
+            ].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults_pe["pvalue"].values,
+            ddf.df[
+                "treated:base.untreated(condition) effect for pe(type) p (Comp. multi)"
+            ].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults_se["log2FoldChange"].values,
+            ddf.df[
+                "treated:base.untreated(condition) effect for se:pe(type) log2FC (Comp. multi)"
+            ].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults_se["padj"].values,
+            ddf.df[
+                "treated:base.untreated(condition) effect for se:pe(type) FDR (Comp. multi)"
+            ].values,
+            decimal=4,
+        )
+        numpy.testing.assert_almost_equal(
+            rresults_se["pvalue"].values,
+            ddf.df[
+                "treated:base.untreated(condition) effect for se:pe(type) p (Comp. multi)"
+            ].values,
+            decimal=4,
+        )
+
+    def test_other_sample_dependencies(self):
+        import mbf_sampledata
+
+        pasilla_data = pd.read_csv(
+            mbf_sampledata.get_sample_path(
+                "mbf_comparisons/pasillaCount_deseq2.tsv.gz"
+            ),
+            sep=" ",
+        )
+        # pasilla_data = pasilla_data.set_index('Gene')
+        pasilla_data.columns = [str(x) for x in pasilla_data.columns]
 
         gts = {
             "treated": [x for x in pasilla_data.columns if x.startswith("treated")],
@@ -440,6 +700,76 @@ class TestComparisons:
                 )
                 self.assertAlmostEqual(df.ix[row[0]][a["p"]], float(row[5]), places=2)
                 self.assertAlmostEqual(df.ix[row[0]][a["FDR"]], float(row[6]), places=2)
+
+    def _get_marioni_data(self):
+        import mbf_r
+        import rpy2.robjects as robjects
+
+        robjects.r("library(NOISeq)")
+        robjects.r("data(Marioni)")
+        counts = mbf_r.convert_dataframe_from_r(robjects.r("mycounts"))
+        counts["gene_stable_id"] = counts.index.values
+        factors = mbf_r.convert_dataframe_from_r(robjects.r("myfactors"))
+        chroms = mbf_r.convert_dataframe_from_r(robjects.r("mychroms"))
+        counts["chr"] = chroms["Chr"]
+        counts["start"] = chroms["GeneStart"]
+        counts["stop"] = chroms["GeneEnd"]
+        biotypes = robjects.r("mybiotypes")
+        counts["biotype"] = biotypes
+        mynoiseq = robjects.r(
+            """
+            mydata = readData(data=mycounts, length = mylength, biotype = mybiotypes, chromosome=mychroms, factors=myfactors)
+            mynoiseq = noiseq(mydata, k = 0.5, norm = "tmm", factor = "Tissue", pnr = 0.2, nss = 5, v = 0.02, lc = 0, replicates = "technical")
+            """
+        )
+        results = robjects.r("function(mynoiseq){as.data.frame(mynoiseq@results)}")(
+            mynoiseq
+        )
+        results = mbf_r.convert_dataframe_from_r(results)
+        up = robjects.r(
+            "function(mynoiseseq){as.data.frame(degenes(mynoiseq, q = 0.8, M = 'up'))}"
+        )(mynoiseq)
+        up = mbf_r.convert_dataframe_from_r(up)
+        return counts, factors, results, up
+
+    def test_noiseq(self):
+        df_counts, df_factors, results, up = self._get_marioni_data()
+        ddf = DelayedDataFrame("ex1", df_counts)
+        gts = {}
+        for tissue, sub in df_factors.groupby("Tissue"):
+            gts[tissue] = list(sub.index.values)
+        c = Comparisons(ddf, gts)
+        noise = NOISeq()
+        assert noise.norm == "tmm"
+        assert noise.lc == 0
+        assert noise.v == 0.02
+        assert noise.nss == 5
+        a = c.a_vs_b("Kidney", "Liver", noise, laplace_offset=0.5)
+        force_load(ddf.add_annotator(a))
+        run_pipegraph()
+        numpy.testing.assert_array_equal(
+            results["ranking"], ddf.df["Comp. Kidney - Liver Rank (NOIseq,Other=False)"]
+        )
+        numpy.testing.assert_array_equal(
+            results["prob"], ddf.df["Comp. Kidney - Liver Prob. (NOIseq,Other=False)"]
+        )
+        numpy.testing.assert_array_equal(
+            results["M"], ddf.df["Comp. Kidney - Liver log2FC (NOIseq,Other=False)"]
+        )
+        numpy.testing.assert_array_equal(
+            results["D"], ddf.df["Comp. Kidney - Liver D (NOIseq,Other=False)"]
+        )
+        upregulated = ddf.df[
+            (ddf.df["Comp. Kidney - Liver Prob. (NOIseq,Other=False)"] >= 0.8)
+            & (ddf.df["Comp. Kidney - Liver log2FC (NOIseq,Other=False)"] > 0)
+        ]
+        genes_up = set(upregulated["gene_stable_id"])
+        genes_should_up = set(up.index.values)
+        assert (
+            len(genes_up.intersection(genes_should_up))
+            == len(genes_up)
+            == len(genes_should_up)
+        )
 
 
 @pytest.mark.usefixtures("no_pipegraph")
