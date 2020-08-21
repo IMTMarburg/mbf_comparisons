@@ -593,7 +593,7 @@ class ComparisonAnnotatorMulti(ComparisonAnnotator):
         """
         return f"{col} (Comp. {self.comparison_name})"
 
-@deprecation.deprecated(details="Use the new ComparisonAnnotator")
+
 class ComparisonAnnotatorOld(ComparisonAnnotator):
     """
     I needed to adjust the calc fuction of ComparisonAnnotator to account for

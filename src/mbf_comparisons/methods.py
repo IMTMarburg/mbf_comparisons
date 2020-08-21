@@ -1000,7 +1000,6 @@ class NOISeq:
         return df
 
 
-@deprecation.deprecated(details="Use the new DEseq2Unpaired")
 class DESeq2UnpairedOld(DESeq2Unpaired):
     # this is the original deseq2unpaired, i keep it to reproduce the erroneus results, please delete this
     name = "DESeq2UnpairedOld"

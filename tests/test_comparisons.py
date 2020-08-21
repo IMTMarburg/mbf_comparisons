@@ -751,7 +751,7 @@ class TestComparisons:
             results["ranking"], ddf.df["Comp. Kidney - Liver Rank (NOIseq,Other=False)"]
         )
         numpy.testing.assert_array_equal(
-            results["prob"], ddf.df["Comp. Kidney - Liver Prob. (NOIseq,Other=False)"]
+            results["prob"], ddf.df["Comp. Kidney - Liver Prob (NOIseq,Other=False)"]
         )
         numpy.testing.assert_array_equal(
             results["M"], ddf.df["Comp. Kidney - Liver log2FC (NOIseq,Other=False)"]
@@ -760,7 +760,7 @@ class TestComparisons:
             results["D"], ddf.df["Comp. Kidney - Liver D (NOIseq,Other=False)"]
         )
         upregulated = ddf.df[
-            (ddf.df["Comp. Kidney - Liver Prob. (NOIseq,Other=False)"] >= 0.8)
+            (ddf.df["Comp. Kidney - Liver Prob (NOIseq,Other=False)"] >= 0.8)
             & (ddf.df["Comp. Kidney - Liver log2FC (NOIseq,Other=False)"] > 0)
         ]
         genes_up = set(upregulated["gene_stable_id"])
