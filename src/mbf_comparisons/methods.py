@@ -325,74 +325,6 @@ class DESeq2Unpaired:
         return df
 
 
-class DESeq2UnpairedOld(DESeq2Unpaired):
-    # this is the original deseq2unpaired, i keep it to reproduce the erroneus results, please delete this
-    name = "DESeq2UnpairedOld"
-
-    def call_DESeq2(self, count_data, samples, conditions):
-        """Call DESeq2.
-        @count_data is a DataFrame with 'samples' as the column names.
-        @samples is a list. @conditions as well. Condition is the one you're contrasting on.
-        You can add additional_conditions (a DataFrame, index = samples) which DESeq2 will
-        keep under consideration (changes the formula).
-        """
-        import rpy2.robjects as robjects
-        import rpy2.robjects.numpy2ri as numpy2ri
-        import mbf_r
-
-        count_data = count_data.values
-        count_data = np.array(count_data)
-        nr, nc = count_data.shape
-        count_data = count_data.reshape(count_data.size)  # turn into 1d vector
-        count_data = robjects.r.matrix(
-            numpy2ri.py2rpy(count_data), nrow=nr, ncol=nc, byrow=True
-        )
-        col_data = pd.DataFrame({"sample": samples, "condition": conditions}).set_index(
-            "sample"
-        )
-        formula = "~ condition"
-        col_data = col_data.reset_index(drop=True)
-        col_data = mbf_r.convert_dataframe_to_r(pd.DataFrame(col_data.to_dict("list")))
-        deseq_experiment = robjects.r("DESeqDataSetFromMatrix")(
-            countData=count_data, colData=col_data, design=robjects.Formula(formula)
-        )
-        deseq_experiment = robjects.r("DESeq")(deseq_experiment)
-        res = robjects.r("results")(
-            deseq_experiment, contrast=robjects.r("c")("condition", "c", "base")
-        )
-        df = mbf_r.convert_dataframe_from_r(robjects.r("as.data.frame")(res))
-        return df
-
-    def compare(self, df, columns_a, columns_b, columns_other, _laplace_offset):
-        # laplace_offset is ignored
-        import rpy2.robjects as robjects
-
-        robjects.r('library("DESeq2")')
-        columns = []
-        conditions = []
-        samples = []
-        for (name, cols) in [
-            ("c", columns_a),
-            ("other", columns_other),
-            ("base", columns_b),
-        ]:
-            for col in cols:
-                columns.append(col)
-                conditions.append(name)
-                samples.append(col)
-        for c in columns:
-            print(c, c in df.columns)
-        print("-------------")
-        for c in df.columns:
-            print(c, c in columns)
-        count_data = df[columns]
-        df = self.call_DESeq2(count_data, samples, conditions)
-        df = df.rename(
-            columns={"log2FoldChange": "log2FC", "pvalue": "p", "padj": "FDR"}
-        )
-        return df[self.columns].reset_index(drop=True)
-
-
 class DESeq2MultiFactor:
     def __init__(self):
         self.min_sample_count = 3
@@ -885,8 +817,8 @@ class NOISeq:
 
     min_sample_count = 1
     name = "NOIseq"
-    columns = ["log2FC", "Prob.", "Rank", "D"]
     supports_other_samples = True
+    columns = ["log2FC", "Prob", "Rank", "D"]
 
     def __init__(
         self,
@@ -910,6 +842,7 @@ class NOISeq:
                 raise ValueError(
                     "If you choose 'rpkm' as norm, you need to supply an IntervalStrategy and a genome."
                 )
+        self.columns = ["log2FC", "Prob", "Rank", "D"]
         self.interval_strategy = interval_strategy
         self.lc = lc
         self.v = v
@@ -981,7 +914,7 @@ class NOISeq:
         df = self.call_noiseq(
             count_data, factors, biotypes, lengths, df_chrom, _laplace_offset,
         )
-        df = df.rename(columns={"M": "log2FC", "prob": "Prob.", "ranking": "Rank"})
+        df = df.rename(columns={"M": "log2FC", "prob": "Prob", "ranking": "Rank"})
         return df[self.columns].reset_index(drop=True)
 
     def deps(self) -> List[Job]:
@@ -992,7 +925,7 @@ class NOISeq:
         return [
             ppg.ParameterInvariant(
                 self.__class__.__name__ + "_" + self.name,
-                (version, self.lc, self.nss, self.norm, self.v),
+                (version, self.lc, self.nss, self.norm, self.v, self.columns),
             ),
             ppg.FunctionInvariant(f"FI_{self.name}_compare", self.compare),
             ppg.FunctionInvariant(f"FI_{self.name}_call_noiseq", self.call_noiseq),
@@ -1065,3 +998,72 @@ class NOISeq:
         results = robjects.r("function(mynoiseq){mynoiseq@results}")(noiseq)
         df = mbf_r.convert_dataframe_from_r(robjects.r("as.data.frame")(results))
         return df
+
+
+@deprecation.deprecated(details="Use the new DEseq2Unpaired")
+class DESeq2UnpairedOld(DESeq2Unpaired):
+    # this is the original deseq2unpaired, i keep it to reproduce the erroneus results, please delete this
+    name = "DESeq2UnpairedOld"
+
+    def call_DESeq2(self, count_data, samples, conditions):
+        """Call DESeq2.
+        @count_data is a DataFrame with 'samples' as the column names.
+        @samples is a list. @conditions as well. Condition is the one you're contrasting on.
+        You can add additional_conditions (a DataFrame, index = samples) which DESeq2 will
+        keep under consideration (changes the formula).
+        """
+        import rpy2.robjects as robjects
+        import rpy2.robjects.numpy2ri as numpy2ri
+        import mbf_r
+
+        count_data = count_data.values
+        count_data = np.array(count_data)
+        nr, nc = count_data.shape
+        count_data = count_data.reshape(count_data.size)  # turn into 1d vector
+        count_data = robjects.r.matrix(
+            numpy2ri.py2rpy(count_data), nrow=nr, ncol=nc, byrow=True
+        )
+        col_data = pd.DataFrame({"sample": samples, "condition": conditions}).set_index(
+            "sample"
+        )
+        formula = "~ condition"
+        col_data = col_data.reset_index(drop=True)
+        col_data = mbf_r.convert_dataframe_to_r(pd.DataFrame(col_data.to_dict("list")))
+        deseq_experiment = robjects.r("DESeqDataSetFromMatrix")(
+            countData=count_data, colData=col_data, design=robjects.Formula(formula)
+        )
+        deseq_experiment = robjects.r("DESeq")(deseq_experiment)
+        res = robjects.r("results")(
+            deseq_experiment, contrast=robjects.r("c")("condition", "c", "base")
+        )
+        df = mbf_r.convert_dataframe_from_r(robjects.r("as.data.frame")(res))
+        return df
+
+    def compare(self, df, columns_a, columns_b, columns_other, _laplace_offset):
+        # laplace_offset is ignored
+        import rpy2.robjects as robjects
+
+        robjects.r('library("DESeq2")')
+        columns = []
+        conditions = []
+        samples = []
+        for (name, cols) in [
+            ("c", columns_a),
+            ("other", columns_other),
+            ("base", columns_b),
+        ]:
+            for col in cols:
+                columns.append(col)
+                conditions.append(name)
+                samples.append(col)
+        for c in columns:
+            print(c, c in df.columns)
+        print("-------------")
+        for c in df.columns:
+            print(c, c in columns)
+        count_data = df[columns]
+        df = self.call_DESeq2(count_data, samples, conditions)
+        df = df.rename(
+            columns={"log2FoldChange": "log2FC", "pvalue": "p", "padj": "FDR"}
+        )
+        return df[self.columns].reset_index(drop=True)

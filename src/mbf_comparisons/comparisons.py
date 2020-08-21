@@ -55,6 +55,7 @@ class Comparisons:
                     )
         self.register_qc()
 
+    @deprecation.deprecated(details="Use the new a_vs_b method")
     def a_vs_b_old(
         self,
         a,
