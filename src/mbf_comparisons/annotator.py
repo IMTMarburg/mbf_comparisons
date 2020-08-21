@@ -91,7 +91,7 @@ class ComparisonAnnotator(Annotator):
         """look up the full column name from log2FC, p, FDR, etc"""
         return self.column_lookup[itm]
 
-    def filter(self, filter_definition, new_name=None):
+    def filter(self, filter_definition, new_name=None, sheet_name=None):
         """Turn a filter definition [(column, operator, threshold)...]
         into a filtered genes object.
 
@@ -109,38 +109,65 @@ class ComparisonAnnotator(Annotator):
 
             ]
         """
-        if new_name is None:
-            filter_str = []
-            for column, op, threshold in sorted(filter_definition):
-                if op == "==":
-                    oop = "＝"
-                elif op == ">":
-                    oop = "＞"
-                elif op == "<":
-                    oop = "＜"
-                elif op == ">=":
-                    oop = "≥"
-                elif op == "<=":
-                    oop = "≤"
-                elif op == "|>":
-                    oop = "|＞"
-                elif op == "|<":
-                    oop = "|＜"
-                elif op == "|>=":
-                    oop = "|≥"
-                elif op == "|<=":
-                    oop = "|≤"
-                else:
-                    oop = op
-                filter_str.append(f"{column}_{oop}_{threshold:.2f}")
-            filter_str = "__".join(filter_str)
-            new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
-
         lookup = self.column_lookup.copy()
         for c in self.columns:
             lookup[c] = c
 
-        # we need the filter func for the plotting
+        subset_relevant_columns = set(lookup.values())
+        subset_relevant_columns.update(self.sample_columns(self.comp[0]))
+        subset_relevant_columns.update(self.sample_columns(self.comp[1]))
+        for g in self.other_groups_for_variance:
+            subset_relevant_columns.update(self.sample_columns(g))
+
+        further_filters = []
+        add_direction = False
+        thresholds = {}
+        filter_str = []
+        for column, op, threshold in sorted(filter_definition):
+            if op == "==":
+                oop = "＝"
+            elif op == ">":
+                oop = "＞"
+            elif op == "<":
+                oop = "＜"
+            elif op == ">=":
+                oop = "≥"
+            elif op == "<=":
+                oop = "≤"
+            elif op == "|>":
+                oop = "|＞"
+            elif op == "|<":
+                oop = "|＜"
+            elif op == "|>=":
+                oop = "|≥"
+            elif op == "|<=":
+                oop = "|≤"
+            else:
+                oop = op
+            filter_str.append(f"{column}_{oop}_{threshold:.2f}")
+            subset_relevant_columns.add(lookup[column])
+            if column == "log2FC":
+                if "|" in op:
+                    add_direction = True
+            thresholds[column] = threshold
+
+        if new_name is None:
+            filter_str = "__".join(filter_str)
+            new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
+
+        if "log2FC" in lookup:
+            further_filters.append(("logFC", lookup["log2FC"], 2, thresholds.get('log2FC', 0)))
+            if add_direction:
+                further_filters.append(("Direction", lookup["log2FC"], 1, 0))
+        for x in ["p", "FDR"]:  # less than
+            if x in lookup:
+                further_filters.append((x, lookup[x], 5, thresholds.get(x, 1)))
+
+        for x in ["minExpression"]:  # min of columns > x
+            if x in lookup:
+                further_filters.append((x, [lookup[x]], 4, thresholds.get(x, 0)))
+
+        # we need the filter func for the plotting, so we do it ourselves
         filter_func, annos = self.comparisons.ddf.definition_to_function(
             filter_definition, lookup
         )
@@ -153,6 +180,7 @@ class ComparisonAnnotator(Annotator):
             annotators=annos,
             column_lookup=lookup,
             result_dir=self.result_dir / new_name,
+            sheet_name=sheet_name,
             **kwargs,
         )
         if not qc_disabled():
@@ -161,6 +189,8 @@ class ComparisonAnnotator(Annotator):
             # self.register_qc_ma_plot(self.comparisons.ddf, res, filter_func)
         res.plot_columns = self.samples()
         res.venn_annotator = self
+        res.subset_relevant_columns = subset_relevant_columns
+        res.further_filter_columns = further_filters
         return res
 
     def calc(self, df):
@@ -213,7 +243,7 @@ class ComparisonAnnotator(Annotator):
 
     def samples(self):
         """Return anno, column for samples used"""
-        for x in self.comp:
+        for x in list(self.comp) + self.other_groups_for_variance:
             for s in self.comparisons.groups_to_samples[x]:
                 yield s
 

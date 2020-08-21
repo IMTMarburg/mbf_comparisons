@@ -1055,8 +1055,8 @@ class DESeq2UnpairedOld(DESeq2Unpaired):
                 columns.append(col)
                 conditions.append(name)
                 samples.append(col)
-        for c in columns:
-            print(c, c in df.columns)
+        for col in df.columns:
+            print(col)
         print("-------------")
         for c in df.columns:
             print(c, c in columns)
