@@ -294,7 +294,7 @@ class Comparisons:
                 .p9()
                 .theme_bw()
                 .annotation_stripes()
-                .geom_violin(dp.aes("sample", "y"), width=0.5)
+                #.geom_violin(dp.aes("sample", "y"), width=0.5)
                 .add_boxplot(x="sample", y="y", _width=0.1, _fill=None, color="group")
                 .scale_color_many_categories()
                 .scale_y_continuous(trans="log10", name=self.find_variable_name())
