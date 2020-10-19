@@ -153,7 +153,7 @@ class ComparisonAnnotator(Annotator):
 
         if new_name is None:
             filter_str = "__".join(filter_str)
-            new_name = f"Filtered_{self.comp[0]}-{self.comp[1]}_{filter_str}"
+            new_name = f"Filtered_{self.comparison_strategy.name}_{self.comp[0]}-{self.comp[1]}_{filter_str}"
 
         if "log2FC" in lookup:
             further_filters.append(("logFC", lookup["log2FC"], 2, thresholds.get('log2FC', 0)))

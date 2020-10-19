@@ -13,6 +13,7 @@ import functools
 import pandas as pd
 import pypipegraph as ppg
 import dppd_plotnine  # noqa: F401
+import itertools
 
 dp, X = dppd()
 
@@ -216,6 +217,12 @@ class Comparisons:
         for a in self.groups_to_samples:
             if a != b:
                 res[a] = self.a_vs_b(a, b, method, laplace_offset)
+        return res
+
+    def all_vs_all(self, method, laplace_offset=1 / 1e6):
+        res = {}
+        for a, b in itertools.combinations(self.groups_to_samples, 2):
+                res[a, b] = self.a_vs_b(a, b, method, laplace_offset)
         return res
 
     def _check_input_dict(self, groups_to_samples):
