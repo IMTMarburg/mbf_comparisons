@@ -110,7 +110,7 @@ class EdgeRUnpaired:
             samples = pd.DataFrame({"lib.size": input_df.sum(axis=0)})
         # this looks like it inverts the columns,
         # but it doesnt'
-        samples.insert(0, "group", ["z"] * len(columns_b) + ["x"] * len(columns_a))
+        samples.insert(0, "group", ["z"] * len(columns_a) + ["x"] * len(columns_b))
         r_counts = mbf_r.convert_dataframe_to_r(input_df)
         r_samples = mbf_r.convert_dataframe_to_r(samples)
         y = ro.r("DGEList")(
